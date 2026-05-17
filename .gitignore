@@ -12,3 +12,7 @@ coverage/
 
 backend/data/*.sqlite3
 backend/data/*.sqlite3-*
+data/*.sqlite
+data/*.sqlite-*
+data/*.sqlite3
+data/*.sqlite3-*
