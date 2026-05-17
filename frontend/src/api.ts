@@ -60,6 +60,7 @@ export type CodexThread = {
   id: string;
   title: string;
   status: "queued" | "running" | "complete" | "failed";
+  external_codex_thread_id: string | null;
   error_message: string | null;
   context: CodexThreadContext | null;
   created_at: string;

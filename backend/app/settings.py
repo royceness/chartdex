@@ -14,6 +14,8 @@ class Settings(BaseModel):
     jwt_audience: str = "chartdex.api"
     access_token_minutes: int = 8 * 60
     openai_api_key: str | None = None
+    github_token: str | None = None
+    github_repository: str = "royceness/acme-outdoor-demo-store"
 
 
 @lru_cache
@@ -29,6 +31,11 @@ def get_settings() -> Settings:
         jwt_audience=os.environ.get("CHARTDEX_JWT_AUDIENCE", "chartdex.api"),
         access_token_minutes=int(os.environ.get("CHARTDEX_ACCESS_TOKEN_MINUTES", str(8 * 60))),
         openai_api_key=load_openai_api_key(),
+        github_token=os.environ.get("CHARTDEX_GITHUB_TOKEN") or None,
+        github_repository=os.environ.get(
+            "CHARTDEX_GITHUB_REPOSITORY",
+            "royceness/acme-outdoor-demo-store",
+        ),
     )
 
 
