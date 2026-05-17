@@ -230,38 +230,21 @@ function mockDashboardResponses() {
     .mockResolvedValueOnce({
       ok: true,
       json: async () => ({
+        dashboard: checkoutDashboardDetail(),
+      }),
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
         dashboard: {
-          id: "dash_checkout_funnel",
-          org_id: "org_acme",
-          owner_user_id: null,
-          slug: "checkout-funnel",
-          name: "Checkout Funnel",
-          space: "org",
-          description: "Session-to-purchase conversion and step drop-off.",
-          agent_description: "Use Checkout Funnel for conversion health.",
-          time_range_label: "May 12 - Jun 10, 2026",
-          panels: [
-            {
-              id: "panel_revenue_over_time",
-              title: "Revenue Over Time",
-              type: "line",
-              metric_key: "revenue",
-              value_format: "currency",
-              description: "Daily revenue.",
-              agent_description: "Use this panel for revenue trend questions.",
-              data: [{ metric: "revenue", observed_on: "2026-05-12", value: 1210000 }],
-            },
-            {
-              id: "panel_conversion_over_time",
-              title: "Checkout Conversion Over Time",
-              type: "line",
-              metric_key: "conversion",
-              value_format: "percent",
-              description: "Daily conversion.",
-              agent_description: "Use this panel for conversion trend questions.",
-              data: [{ metric: "conversion", observed_on: "2026-05-12", value: 9.4 }],
-            },
-          ],
+          ...checkoutDashboardDetail(),
+          id: "dash_growth_experiments",
+          owner_user_id: "u_admin",
+          slug: "growth-experiments",
+          name: "Growth Experiments",
+          space: "personal",
+          description: "Experiment rollout and segment-level performance.",
+          agent_description: "Use Growth Experiments for experiment analysis.",
         },
       }),
     })
@@ -284,6 +267,42 @@ function mockDashboardResponses() {
         ],
       }),
     });
+}
+
+function checkoutDashboardDetail() {
+  return {
+    id: "dash_checkout_funnel",
+    org_id: "org_acme",
+    owner_user_id: null,
+    slug: "checkout-funnel",
+    name: "Checkout Funnel",
+    space: "org",
+    description: "Session-to-purchase conversion and step drop-off.",
+    agent_description: "Use Checkout Funnel for conversion health.",
+    time_range_label: "May 12 - Jun 10, 2026",
+    panels: [
+      {
+        id: "panel_revenue_over_time",
+        title: "Revenue Over Time",
+        type: "line",
+        metric_key: "revenue",
+        value_format: "currency",
+        description: "Daily revenue.",
+        agent_description: "Use this panel for revenue trend questions.",
+        data: [{ metric: "revenue", observed_on: "2026-05-12", value: 1210000 }],
+      },
+      {
+        id: "panel_conversion_over_time",
+        title: "Checkout Conversion Over Time",
+        type: "line",
+        metric_key: "conversion",
+        value_format: "percent",
+        description: "Daily conversion.",
+        agent_description: "Use this panel for conversion trend questions.",
+        data: [{ metric: "conversion", observed_on: "2026-05-12", value: 9.4 }],
+      },
+    ],
+  };
 }
 
 function codexThreadPayload(id: string, title: string, status: "queued" | "running" | "complete" | "failed") {

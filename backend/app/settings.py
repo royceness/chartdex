@@ -13,6 +13,7 @@ class Settings(BaseModel):
     jwt_issuer: str = "chartdex.local"
     jwt_audience: str = "chartdex.api"
     access_token_minutes: int = 8 * 60
+    openai_api_key: str | None = None
 
 
 @lru_cache
@@ -27,4 +28,24 @@ def get_settings() -> Settings:
         jwt_issuer=os.environ.get("CHARTDEX_JWT_ISSUER", "chartdex.local"),
         jwt_audience=os.environ.get("CHARTDEX_JWT_AUDIENCE", "chartdex.api"),
         access_token_minutes=int(os.environ.get("CHARTDEX_ACCESS_TOKEN_MINUTES", str(8 * 60))),
+        openai_api_key=load_openai_api_key(),
     )
+
+
+def load_openai_api_key() -> str | None:
+    from_env = os.environ.get("CHARTDEX_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if from_env:
+        return from_env
+
+    env_path = Path.home() / ".env"
+    if not env_path.exists():
+        return None
+
+    for line in env_path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        if key.strip() in {"CHARTDEX_OPENAI_API_KEY", "OPENAI_API_KEY"}:
+            return value.strip().strip('"').strip("'")
+    return None

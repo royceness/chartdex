@@ -5,6 +5,7 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 
+import app.main as main_module
 from app.auth import verify_password
 from app.main import app
 from app.settings import get_settings
@@ -14,6 +15,9 @@ from app.settings import get_settings
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setenv("CHARTDEX_APP_DB_PATH", str(tmp_path / "app_state.sqlite3"))
     monkeypatch.setenv("CHARTDEX_METRICS_DB_PATH", str(tmp_path / "metrics.sqlite3"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CHARTDEX_OPENAI_API_KEY", raising=False)
     get_settings.cache_clear()
 
     with TestClient(app) as test_client:
@@ -237,13 +241,78 @@ def test_protected_routes_require_cookie(client: TestClient) -> None:
         "/api/codex/threads",
         json={"title": "No auth", "utterance": "Should fail"},
     )
+    realtime_response = client.post("/api/realtime/session")
     metrics_response = client.get("/api/metrics/revenue")
 
     assert dashboards_response.status_code == 401
     assert dashboard_detail_response.status_code == 401
     assert threads_response.status_code == 401
     assert create_thread_response.status_code == 401
+    assert realtime_response.status_code == 401
     assert metrics_response.status_code == 401
+
+
+def test_realtime_session_requires_openai_api_key(client: TestClient) -> None:
+    login(client)
+
+    response = client.post(
+        "/api/realtime/session",
+        files={"sdp": (None, "offer"), "session": (None, "{}")},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "OpenAI API key is not configured"
+
+
+def test_realtime_session_proxies_multipart_request(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    login(client)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    get_settings.cache_clear()
+    captured: dict[str, object] = {}
+
+    class FakeHeaders:
+        def get(self, key: str, default: str | None = None) -> str | None:
+            return "application/sdp" if key.lower() == "content-type" else default
+
+    class FakeUpstreamResponse:
+        status = 200
+        headers = FakeHeaders()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self) -> bytes:
+            return b"answer-sdp"
+
+    def fake_urlopen(request, timeout: int):
+        captured["timeout"] = timeout
+        captured["url"] = request.full_url
+        captured["method"] = request.get_method()
+        captured["data"] = request.data
+        captured["authorization"] = request.headers["Authorization"]
+        captured["content_type"] = request.headers["Content-type"]
+        return FakeUpstreamResponse()
+
+    monkeypatch.setattr(main_module, "urlopen", fake_urlopen)
+
+    response = client.post(
+        "/api/realtime/session",
+        files={"sdp": (None, "offer"), "session": (None, "{}")},
+    )
+
+    assert response.status_code == 200
+    assert response.text == "answer-sdp"
+    assert captured["url"] == "https://api.openai.com/v1/realtime/calls"
+    assert captured["method"] == "POST"
+    assert captured["authorization"] == "Bearer sk-test"
+    assert "multipart/form-data" in str(captured["content_type"])
+    assert b"offer" in captured["data"]
 
 
 def test_logout_clears_cookie_and_session(client: TestClient) -> None:

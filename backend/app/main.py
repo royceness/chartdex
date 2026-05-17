@@ -1,7 +1,10 @@
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request as UrlRequest
+from urllib.request import urlopen
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, status
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -46,6 +49,8 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+
+OPENAI_REALTIME_CALLS_URL = "https://api.openai.com/v1/realtime/calls"
 
 
 class CodexThreadContextRequest(BaseModel):
@@ -118,6 +123,58 @@ def codex_threads(auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
             user_id=auth.user_id,
         )
     }
+
+
+@app.post("/api/realtime/session")
+async def realtime_session(
+    request: Request,
+    auth: AuthContext = Depends(require_auth),
+) -> Response:
+    settings = get_settings()
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="OpenAI API key is not configured",
+        )
+
+    content_type = request.headers.get("content-type")
+    if not content_type:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Content-Type header is required",
+        )
+
+    upstream_request = UrlRequest(
+        OPENAI_REALTIME_CALLS_URL,
+        data=await request.body(),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {settings.openai_api_key}",
+            "Content-Type": content_type,
+        },
+    )
+    try:
+        with urlopen(upstream_request, timeout=30) as upstream_response:
+            body = upstream_response.read()
+            response_content_type = upstream_response.headers.get("content-type", "application/sdp")
+            return Response(
+                content=body,
+                media_type=response_content_type,
+                status_code=upstream_response.status,
+            )
+    except HTTPError as exc:
+        body = exc.read()
+        response_content_type = exc.headers.get("content-type", "text/plain")
+        return Response(
+            content=body,
+            media_type=response_content_type,
+            status_code=exc.code,
+        )
+    except URLError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Unable to reach OpenAI Realtime API: {exc.reason}",
+        ) from exc
 
 
 @app.post("/api/codex/threads", status_code=status.HTTP_201_CREATED)

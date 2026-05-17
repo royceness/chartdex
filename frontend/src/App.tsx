@@ -1,4 +1,4 @@
-import { Children, isValidElement, useEffect, useState } from "react";
+import { Children, isValidElement, useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactElement, ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -33,6 +33,7 @@ import {
   login,
   logout,
 } from "./api";
+import { ChartDexVoiceAgent } from "./voice/ChartDexVoiceAgent";
 
 type ChartSelection = {
   dashboardId: string;
@@ -49,6 +50,7 @@ type LoadState =
       status: "ready";
       user: User;
       dashboards: Dashboard[];
+      dashboardDetails: Record<string, DashboardDetail>;
       selectedDashboard: DashboardDetail;
       threads: CodexThread[];
     }
@@ -57,6 +59,7 @@ type LoadState =
 export function App() {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [selection, setSelection] = useState<ChartSelection | null>(null);
+  const [focusedPanelId, setFocusedPanelId] = useState<string | null>(null);
 
   async function loadAuthenticatedApp(user: User, dashboardId?: string) {
     const dashboards = await fetchDashboards();
@@ -66,11 +69,18 @@ export function App() {
       throw new Error("No dashboards available");
     }
 
-    const [selectedDashboard, threads] = await Promise.all([
-      fetchDashboardDetail(selectedId),
+    const [dashboardDetailEntries, threads] = await Promise.all([
+      Promise.all(
+        dashboards.map(async (dashboard) => [dashboard.id, await fetchDashboardDetail(dashboard.id)] as const),
+      ),
       fetchCodexThreads(),
     ]);
-    setState({ status: "ready", user, dashboards, selectedDashboard, threads });
+    const dashboardDetails = Object.fromEntries(dashboardDetailEntries);
+    const selectedDashboard = dashboardDetails[selectedId];
+    if (!selectedDashboard) {
+      throw new Error(`Dashboard detail not found for ${selectedId}`);
+    }
+    setState({ status: "ready", user, dashboards, dashboardDetails, selectedDashboard, threads });
   }
 
   async function refreshThreads() {
@@ -131,13 +141,55 @@ export function App() {
     }
   }
 
-  async function handleSelectDashboard(dashboardId: string) {
+  async function handleSelectDashboard(dashboardId: string): Promise<DashboardDetail> {
     if (state.status !== "ready" || dashboardId === state.selectedDashboard.id) {
-      return;
+      if (state.status !== "ready") {
+        throw new Error("ChartDex is not ready");
+      }
+      return state.selectedDashboard;
     }
     setSelection(null);
-    const selectedDashboard = await fetchDashboardDetail(dashboardId);
-    setState({ ...state, selectedDashboard });
+    setFocusedPanelId(null);
+    const selectedDashboard = state.dashboardDetails[dashboardId] ?? await fetchDashboardDetail(dashboardId);
+    setState({
+      ...state,
+      dashboardDetails: {
+        ...state.dashboardDetails,
+        [dashboardId]: selectedDashboard,
+      },
+      selectedDashboard,
+    });
+    return selectedDashboard;
+  }
+
+  async function handleFocusPanel(panelId: string) {
+    if (state.status !== "ready") {
+      throw new Error("ChartDex is not ready");
+    }
+
+    const targetEntry = Object.entries(state.dashboardDetails).find(([, dashboard]) =>
+      dashboard.panels.some((panel) => panel.id === panelId),
+    );
+    if (!targetEntry) {
+      throw new Error(`Panel not found: ${panelId}`);
+    }
+
+    const [dashboardId, dashboard] = targetEntry;
+    if (dashboardId !== state.selectedDashboard.id) {
+      setSelection(null);
+      setState({ ...state, selectedDashboard: dashboard });
+    }
+    setFocusedPanelId(panelId);
+    return { dashboardId, panelId };
+  }
+
+  function handleSelectRange(nextSelection: ChartSelection | null) {
+    setSelection(nextSelection);
+    setFocusedPanelId(nextSelection?.panelId ?? null);
+  }
+
+  function handleClearSelection() {
+    setSelection(null);
   }
 
   async function handleCreateCodexThread(utterance: string) {
@@ -162,6 +214,7 @@ export function App() {
   async function handleLogout() {
     await logout();
     setSelection(null);
+    setFocusedPanelId(null);
     setState({ status: "login" });
   }
 
@@ -180,11 +233,15 @@ export function App() {
   return (
     <DashboardShell
       dashboards={state.dashboards}
+      dashboardDetails={state.dashboardDetails}
+      focusedPanelId={focusedPanelId}
+      onClearSelection={handleClearSelection}
       onLogout={handleLogout}
       onCreateCodexThread={handleCreateCodexThread}
       onAppendCodexTurn={handleAppendCodexTurn}
+      onFocusPanel={handleFocusPanel}
       onSelectDashboard={handleSelectDashboard}
-      onSelectRange={setSelection}
+      onSelectRange={handleSelectRange}
       selectedDashboard={state.selectedDashboard}
       selection={selection}
       threads={state.threads}
@@ -195,8 +252,12 @@ export function App() {
 
 function DashboardShell({
   dashboards,
+  dashboardDetails,
+  focusedPanelId,
   onAppendCodexTurn,
+  onClearSelection,
   onCreateCodexThread,
+  onFocusPanel,
   onLogout,
   onSelectDashboard,
   onSelectRange,
@@ -206,10 +267,14 @@ function DashboardShell({
   user,
 }: {
   dashboards: Dashboard[];
+  dashboardDetails: Record<string, DashboardDetail>;
+  focusedPanelId: string | null;
   onAppendCodexTurn: (threadId: string, utterance: string) => Promise<void>;
+  onClearSelection: () => void;
   onCreateCodexThread: (utterance: string) => Promise<void>;
+  onFocusPanel: (panelId: string) => Promise<{ dashboardId: string; panelId: string }>;
   onLogout: () => Promise<void>;
-  onSelectDashboard: (dashboardId: string) => Promise<void>;
+  onSelectDashboard: (dashboardId: string) => Promise<DashboardDetail>;
   onSelectRange: (selection: ChartSelection | null) => void;
   selectedDashboard: DashboardDetail;
   selection: ChartSelection | null;
@@ -218,12 +283,39 @@ function DashboardShell({
 }) {
   const orgDashboards = dashboards.filter((dashboard) => dashboard.space === "org");
   const personalDashboards = dashboards.filter((dashboard) => dashboard.space === "personal");
+  const panelRefs = useRef(new Map<string, HTMLElement>());
+  const dashboardScrollRef = useRef<HTMLDivElement>(null);
+  const registerPanel = useCallback((panelId: string, element: HTMLElement | null) => {
+    if (element) {
+      panelRefs.current.set(panelId, element);
+      return;
+    }
+    panelRefs.current.delete(panelId);
+  }, []);
+  const selectDashboardAtTop = useCallback(
+    async (dashboardId: string) => {
+      const dashboard = await onSelectDashboard(dashboardId);
+      dashboardScrollRef.current?.scrollTo({ left: 0, top: 0 });
+      return dashboard;
+    },
+    [onSelectDashboard],
+  );
+
+  useEffect(() => {
+    if (!focusedPanelId) {
+      return;
+    }
+    panelRefs.current.get(focusedPanelId)?.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+  }, [focusedPanelId, selectedDashboard.id]);
 
   return (
     <main className="grid h-screen overflow-hidden grid-cols-[280px_minmax(520px,1fr)_392px] bg-[#050912] text-slate-100">
       <DashboardSidebar
         onLogout={onLogout}
-        onSelectDashboard={onSelectDashboard}
+        onSelectDashboard={selectDashboardAtTop}
         orgDashboards={orgDashboards}
         personalDashboards={personalDashboards}
         selectedDashboardId={selectedDashboard.id}
@@ -231,14 +323,23 @@ function DashboardShell({
       <section className="flex h-screen min-h-0 flex-col overflow-hidden border-x border-slate-800 bg-[#090e18]">
         <header className="z-10 flex min-h-16 shrink-0 items-center justify-between border-b border-slate-800 bg-[#090e18]/95 px-8 backdrop-blur">
           <AskCodexForm compact={false} onSubmit={onCreateCodexThread} placeholder="Ask a question" />
-          <div className="ml-4 rounded-full border border-blue-400/50 bg-blue-500/20 px-3 py-2 text-sm text-blue-100">
-            Voice
-          </div>
+          <ChartDexVoiceAgent
+            dashboardDetails={dashboardDetails}
+            dashboards={dashboards}
+            focusedPanelId={focusedPanelId}
+            onClearSelection={onClearSelection}
+            onFocusPanel={onFocusPanel}
+            onOpenDashboard={selectDashboardAtTop}
+            selectedDashboard={selectedDashboard}
+            selection={selection ? codexContextForCurrentView(selectedDashboard, selection) : null}
+          />
         </header>
-        <div className="min-h-0 flex-1 overflow-auto">
+        <div className="min-h-0 flex-1 overflow-auto" ref={dashboardScrollRef}>
           <DashboardCanvas
             dashboard={selectedDashboard}
+            focusedPanelId={focusedPanelId}
             onSelectRange={onSelectRange}
+            registerPanel={registerPanel}
             selection={selection}
           />
         </div>
@@ -260,7 +361,7 @@ function DashboardSidebar({
   selectedDashboardId,
 }: {
   onLogout: () => Promise<void>;
-  onSelectDashboard: (dashboardId: string) => Promise<void>;
+  onSelectDashboard: (dashboardId: string) => Promise<DashboardDetail>;
   orgDashboards: Dashboard[];
   personalDashboards: Dashboard[];
   selectedDashboardId: string;
@@ -316,7 +417,7 @@ function DashboardNavGroup({
 }: {
   dashboards: Dashboard[];
   label: string;
-  onSelectDashboard: (dashboardId: string) => Promise<void>;
+  onSelectDashboard: (dashboardId: string) => Promise<DashboardDetail>;
   selectedDashboardId: string;
 }) {
   return (
@@ -331,6 +432,7 @@ function DashboardNavGroup({
                 : "flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-slate-900"
             }
             key={dashboard.id}
+            id={`dashboard-nav-${dashboard.id}`}
             onClick={() => void onSelectDashboard(dashboard.id)}
             type="button"
           >
@@ -345,11 +447,15 @@ function DashboardNavGroup({
 
 function DashboardCanvas({
   dashboard,
+  focusedPanelId,
   onSelectRange,
+  registerPanel,
   selection,
 }: {
   dashboard: DashboardDetail;
+  focusedPanelId: string | null;
   onSelectRange: (selection: ChartSelection | null) => void;
+  registerPanel: (panelId: string, element: HTMLElement | null) => void;
   selection: ChartSelection | null;
 }) {
   return (
@@ -373,9 +479,11 @@ function DashboardCanvas({
         {dashboard.panels.map((panel) => (
           <DashboardPanelCard
             dashboardId={dashboard.id}
+            focused={focusedPanelId === panel.id}
             key={panel.id}
             onSelectRange={onSelectRange}
             panel={panel}
+            registerPanel={registerPanel}
             selection={selection}
           />
         ))}
@@ -392,17 +500,29 @@ function DashboardCanvas({
 
 function DashboardPanelCard({
   dashboardId,
+  focused,
   onSelectRange,
   panel,
+  registerPanel,
   selection,
 }: {
   dashboardId: string;
+  focused: boolean;
   onSelectRange: (selection: ChartSelection | null) => void;
   panel: DashboardPanel;
+  registerPanel: (panelId: string, element: HTMLElement | null) => void;
   selection: ChartSelection | null;
 }) {
   return (
-    <article className="rounded-md border border-slate-800 bg-slate-900/70 p-4 shadow-xl shadow-black/20">
+    <article
+      className={
+        focused
+          ? "rounded-md border border-blue-400 bg-slate-900/70 p-4 shadow-xl shadow-blue-950/40"
+          : "rounded-md border border-slate-800 bg-slate-900/70 p-4 shadow-xl shadow-black/20"
+      }
+      id={`panel-${panel.id}`}
+      ref={(element) => registerPanel(panel.id, element)}
+    >
       <h2 className="mb-3 text-sm font-semibold text-white">{panel.title}</h2>
       {panel.type === "line" ? (
         <InteractiveLinePanel
