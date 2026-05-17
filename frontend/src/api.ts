@@ -1,9 +1,19 @@
 export type Dashboard = {
-  id: number;
+  id: string;
+  org_id: string;
+  owner_user_id: string | null;
   slug: string;
   name: string;
-  space: "org" | "my";
+  space: "org" | "personal";
   description: string;
+};
+
+export type User = {
+  user_id: string;
+  email: string;
+  name: string;
+  org_id: string;
+  role: string;
 };
 
 export type MetricPoint = {
@@ -12,20 +22,52 @@ export type MetricPoint = {
   value: number;
 };
 
-export async function fetchDashboards(): Promise<Dashboard[]> {
-  const response = await fetch("/api/dashboards");
+export async function apiFetch<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
+  const response = await fetch(path, {
+    ...options,
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
   if (!response.ok) {
-    throw new Error(`Failed to load dashboards: ${response.status}`);
+    const message = await response.text();
+    throw new Error(message || `Request failed: ${response.status}`, {
+      cause: response.status,
+    });
   }
-  const payload = (await response.json()) as { dashboards: Dashboard[] };
+
+  return (await response.json()) as T;
+}
+
+export async function fetchCurrentUser(): Promise<User> {
+  const payload = await apiFetch<{ user: User }>("/api/auth/me");
+  return payload.user;
+}
+
+export async function login(email: string, password: string): Promise<User> {
+  const payload = await apiFetch<{ user: User }>("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+  return payload.user;
+}
+
+export async function logout(): Promise<void> {
+  await apiFetch<{ ok: true }>("/api/auth/logout", { method: "POST" });
+}
+
+export async function fetchDashboards(): Promise<Dashboard[]> {
+  const payload = await apiFetch<{ dashboards: Dashboard[] }>("/api/dashboards");
   return payload.dashboards;
 }
 
 export async function fetchMetric(metric: string): Promise<MetricPoint[]> {
-  const response = await fetch(`/api/metrics/${metric}`);
-  if (!response.ok) {
-    throw new Error(`Failed to load metric ${metric}: ${response.status}`);
-  }
-  const payload = (await response.json()) as { points: MetricPoint[] };
+  const payload = await apiFetch<{ points: MetricPoint[] }>(`/api/metrics/${metric}`);
   return payload.points;
 }

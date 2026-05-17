@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "scripts": {
     "dev": "concurrently -n backend,frontend -c blue,green \"npm run dev:backend\" \"npm run dev:frontend\"",
-    "dev:backend": ". .venv/bin/activate && uvicorn app.main:app --app-dir backend --reload --host 127.0.0.1 --port 8010",
+    "dev:backend": ". .venv/bin/activate && uvicorn app.main:app --app-dir backend --reload --reload-dir backend --host 127.0.0.1 --port 8010",
     "dev:frontend": "npm --prefix frontend run dev -- --host 127.0.0.1 --port 5175",
     "test": "npm --prefix frontend test -- --run"
   },
