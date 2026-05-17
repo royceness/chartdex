@@ -172,7 +172,7 @@ function DashboardShell({
   const personalDashboards = dashboards.filter((dashboard) => dashboard.space === "personal");
 
   return (
-    <main className="grid min-h-screen grid-cols-[280px_minmax(520px,1fr)_392px] bg-[#050912] text-slate-100">
+    <main className="grid h-screen overflow-hidden grid-cols-[280px_minmax(520px,1fr)_392px] bg-[#050912] text-slate-100">
       <DashboardSidebar
         onLogout={onLogout}
         onSelectDashboard={onSelectDashboard}
@@ -180,8 +180,8 @@ function DashboardShell({
         personalDashboards={personalDashboards}
         selectedDashboardId={selectedDashboard.id}
       />
-      <section className="min-h-screen overflow-auto border-x border-slate-800 bg-[#090e18]">
-        <header className="sticky top-0 z-10 flex min-h-16 items-center justify-between border-b border-slate-800 bg-[#090e18]/95 px-8 backdrop-blur">
+      <section className="flex h-screen min-h-0 flex-col overflow-hidden border-x border-slate-800 bg-[#090e18]">
+        <header className="z-10 flex min-h-16 shrink-0 items-center justify-between border-b border-slate-800 bg-[#090e18]/95 px-8 backdrop-blur">
           <input
             aria-label="Ask a question"
             className="h-10 w-full max-w-2xl rounded-md border border-slate-700 bg-slate-950/80 px-4 text-sm text-slate-100 outline-none ring-blue-500/20 placeholder:text-slate-500 focus:ring-4"
@@ -191,11 +191,13 @@ function DashboardShell({
             Voice
           </div>
         </header>
-        <DashboardCanvas
-          dashboard={selectedDashboard}
-          onSelectRange={onSelectRange}
-          selection={selection}
-        />
+        <div className="min-h-0 flex-1 overflow-auto">
+          <DashboardCanvas
+            dashboard={selectedDashboard}
+            onSelectRange={onSelectRange}
+            selection={selection}
+          />
+        </div>
       </section>
       <CodexPanel threads={threads} />
     </main>
@@ -216,8 +218,8 @@ function DashboardSidebar({
   selectedDashboardId: string;
 }) {
   return (
-    <aside className="flex min-h-screen flex-col bg-[#060b14]">
-      <div className="flex h-16 items-center gap-3 border-b border-slate-800 px-6">
+    <aside className="flex h-screen min-h-0 flex-col overflow-hidden bg-[#060b14]">
+      <div className="flex h-16 shrink-0 items-center gap-3 border-b border-slate-800 px-6">
         <div className="flex h-7 w-8 items-end gap-1">
           <span className="h-3 w-1.5 rounded bg-blue-400" />
           <span className="h-5 w-1.5 rounded bg-indigo-400" />
@@ -242,7 +244,7 @@ function DashboardSidebar({
         />
       </nav>
 
-      <div className="space-y-2 border-t border-slate-800 p-4">
+      <div className="shrink-0 space-y-2 border-t border-slate-800 bg-[#060b14] p-4">
         <button className="w-full rounded-md px-3 py-2 text-left text-sm text-slate-300 hover:bg-slate-900" type="button">
           Settings
         </button>
@@ -470,8 +472,8 @@ function CodexPanel({ threads }: { threads: CodexThread[] }) {
   }, [threads]);
 
   return (
-    <aside className="flex min-h-screen flex-col bg-[#060b14]">
-      <div className="flex h-16 items-center justify-between border-b border-slate-800 px-5">
+    <aside className="flex h-screen min-h-0 flex-col overflow-hidden bg-[#060b14]">
+      <div className="flex h-16 shrink-0 items-center justify-between border-b border-slate-800 px-5">
         <div className="text-sm font-semibold text-white">✦ Codex</div>
         <button className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200" type="button">
           + New thread
