@@ -1,21 +1,28 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Protocol
 
 from fastapi import HTTPException, status
 
+from app.codex_agent import CodexAgent, CodexAppServerAgentPool
+from app.codex_tools import ChartDexToolContext
 from app.database import (
     append_codex_assistant_turn,
+    append_codex_turn_delta,
     get_codex_thread,
     get_dashboard_detail,
+    replace_codex_turn_markdown,
     update_codex_thread_status,
 )
 
 
 class CodexExecutionProvider(Protocol):
-    def execute_thread_turn(
+    async def execute_thread_turn(
         self,
         *,
         app_db_path: Path,
@@ -25,9 +32,15 @@ class CodexExecutionProvider(Protocol):
     ) -> None:
         ...
 
+    async def close(self) -> None:
+        ...
 
-class LocalDemoCodexProvider:
-    def execute_thread_turn(
+
+@dataclass
+class AppServerCodexProvider:
+    agent: CodexAgent
+
+    async def execute_thread_turn(
         self,
         *,
         app_db_path: Path,
@@ -35,22 +48,44 @@ class LocalDemoCodexProvider:
         org_id: str,
         user_id: str,
     ) -> None:
+        assistant_turn_id = append_codex_assistant_turn(
+            app_db_path,
+            thread_id=thread_id,
+            markdown="",
+        )
         update_codex_thread_status(app_db_path, thread_id=thread_id, status="running")
         try:
-            thread = get_codex_thread(
-                app_db_path,
-                thread_id=thread_id,
+            thread = require_thread(app_db_path, thread_id=thread_id, org_id=org_id, user_id=user_id)
+            latest_question = latest_user_question(thread)
+            tool_context = ChartDexToolContext(
+                app_db_path=app_db_path,
                 org_id=org_id,
                 user_id=user_id,
+                thread_id=thread_id,
             )
-            if thread is None:
-                raise RuntimeError(f"Codex thread not found: {thread_id}")
-            append_codex_assistant_turn(
+            on_delta = build_delta_handler(app_db_path, assistant_turn_id)
+            external_thread_id = thread["external_codex_thread_id"]
+            if external_thread_id:
+                result = await self.agent.continue_thread(
+                    str(external_thread_id),
+                    build_follow_up_codex_prompt(latest_question),
+                    tool_context,
+                    on_delta=on_delta,
+                )
+            else:
+                result = await self.agent.run_thread(
+                    str(thread["title"]),
+                    build_initial_codex_prompt(latest_question, thread["context"]),
+                    tool_context,
+                    on_delta=on_delta,
+                )
+            replace_codex_turn_markdown(app_db_path, turn_id=assistant_turn_id, markdown=result.markdown)
+            update_codex_thread_status(
                 app_db_path,
                 thread_id=thread_id,
-                markdown=local_demo_markdown(thread),
+                status="complete",
+                external_codex_thread_id=result.external_thread_id,
             )
-            update_codex_thread_status(app_db_path, thread_id=thread_id, status="complete")
         except Exception as exc:
             update_codex_thread_status(
                 app_db_path,
@@ -58,7 +93,48 @@ class LocalDemoCodexProvider:
                 status="failed",
                 error_message=str(exc),
             )
+            replace_codex_turn_markdown(
+                app_db_path,
+                turn_id=assistant_turn_id,
+                markdown=f"Codex failed: {exc}",
+            )
             raise
+
+    async def close(self) -> None:
+        await self.agent.close()
+
+
+def build_delta_handler(app_db_path: Path, assistant_turn_id: str) -> Callable[[str], Awaitable[None]]:
+    async def on_delta(delta: str) -> None:
+        append_codex_turn_delta(app_db_path, turn_id=assistant_turn_id, delta=delta)
+
+    return on_delta
+
+
+def require_thread(
+    app_db_path: Path,
+    *,
+    thread_id: str,
+    org_id: str,
+    user_id: str,
+) -> dict[str, object]:
+    thread = get_codex_thread(app_db_path, thread_id=thread_id, org_id=org_id, user_id=user_id)
+    if thread is None:
+        raise RuntimeError(f"Codex thread not found: {thread_id}")
+    return thread
+
+
+def latest_user_question(thread: dict[str, object]) -> str:
+    turns = thread["turns"]
+    if not isinstance(turns, list):
+        raise RuntimeError("Codex thread turns are invalid")
+    user_turns = [turn for turn in turns if isinstance(turn, dict) and turn.get("role") == "user"]
+    if not user_turns:
+        raise RuntimeError("Codex thread has no user turn")
+    markdown = user_turns[-1].get("markdown")
+    if not isinstance(markdown, str) or not markdown:
+        raise RuntimeError("Latest user turn is empty")
+    return markdown
 
 
 def validate_codex_context(
@@ -74,6 +150,13 @@ def validate_codex_context(
     normalized = {key: value for key, value in context.items() if value is not None}
     if not normalized:
         return None
+
+    unsupported = set(normalized) - {"dashboard_id", "panel_id", "metric_key", "range_start", "range_end"}
+    if unsupported:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported context fields: {', '.join(sorted(unsupported))}",
+        )
 
     dashboard_id = normalized.get("dashboard_id")
     panel_id = normalized.get("panel_id")
@@ -149,42 +232,28 @@ def parse_context_date(value: str, field_name: str) -> date:
         ) from exc
 
 
-def local_demo_markdown(thread: dict[str, object]) -> str:
-    turns = thread["turns"]
-    user_turns = [turn for turn in turns if turn["role"] == "user"]
-    latest_question = user_turns[-1]["markdown"] if user_turns else thread["title"]
-    context = thread["context"] or {}
-
-    lines = [
-        "### Codex investigation queued",
-        "",
-        f"I captured the question: {latest_question}",
-    ]
-
-    if context:
-        lines.extend(["", "**Context**"])
-        dashboard_id = context.get("dashboard_id")
-        panel_id = context.get("panel_id")
-        metric_key = context.get("metric_key")
-        range_start = context.get("range_start")
-        range_end = context.get("range_end")
-        if dashboard_id:
-            lines.append(f"- Dashboard: `{dashboard_id}`")
-        if panel_id:
-            lines.append(f"- Panel: `{panel_id}`")
-        if metric_key:
-            lines.append(f"- Metric: `{metric_key}`")
-        if range_start and range_end:
-            lines.append(f"- Selected range: `{range_start}` to `{range_end}`")
-
-    lines.extend(
+def build_initial_codex_prompt(question: str, context: object) -> str:
+    return "\n\n".join(
         [
-            "",
-            "This local demo response proves the browser API, auth scoping, persistence, and polling path. "
-            "The external Codex app-server provider can replace this executor without changing the browser contract.",
+            f"User analytics question:\n{question}",
+            f"Validated ChartDex context snapshot:\n{json.dumps(context or {}, sort_keys=True, default=str)}",
+            (
+                "Use ChartDex tools for metric definitions, dashboards, business events, "
+                "experiments, and bounded metrics queries before making factual claims."
+            ),
         ]
     )
-    return "\n".join(lines)
 
 
-codex_execution_provider: CodexExecutionProvider = LocalDemoCodexProvider()
+def build_follow_up_codex_prompt(question: str) -> str:
+    return "\n\n".join(
+        [
+            f"Follow-up question:\n{question}",
+            "Continue the existing ChartDex investigation. Use tools for any new factual claims.",
+        ]
+    )
+
+
+codex_execution_provider: CodexExecutionProvider = AppServerCodexProvider(
+    CodexAppServerAgentPool(cwd=Path(__file__).resolve().parents[2])
+)

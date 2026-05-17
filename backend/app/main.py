@@ -27,7 +27,10 @@ from app.settings import get_settings
 async def lifespan(app: FastAPI):
     settings = get_settings()
     initialize_databases(settings.app_db_path, settings.metrics_db_path, settings.demo_mode)
-    yield
+    try:
+        yield
+    finally:
+        await codex_execution_provider.close()
 
 
 app = FastAPI(title="ChartDex API", version="0.1.0", lifespan=lifespan)
@@ -176,6 +179,24 @@ def append_codex_thread_turn(
 ) -> dict[str, Any]:
     settings = get_settings()
     utterance = require_non_empty(request.utterance, "utterance")
+    existing_thread = get_codex_thread(
+        settings.app_db_path,
+        thread_id=thread_id,
+        org_id=auth.org_id,
+        user_id=auth.user_id,
+    )
+    if existing_thread is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Codex thread not found")
+    if existing_thread["status"] in {"queued", "running"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Codex thread is still running",
+        )
+    if not existing_thread["external_codex_thread_id"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Codex thread has no external Codex session",
+        )
     try:
         thread = append_codex_user_turn(
             settings.app_db_path,
@@ -189,8 +210,6 @@ def append_codex_thread_turn(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
         ) from exc
-    if thread is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Codex thread not found")
     background_tasks.add_task(
         codex_execution_provider.execute_thread_turn,
         app_db_path=settings.app_db_path,

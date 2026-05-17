@@ -2,10 +2,15 @@ from collections.abc import Iterator
 from pathlib import Path
 import sqlite3
 
+import anyio
 import pytest
 from fastapi.testclient import TestClient
 
+from app import main
 from app.auth import verify_password
+from app.codex_agent import CodexAgentResult
+from app.codex_service import AppServerCodexProvider
+from app.codex_tools import ChartDexToolContext, handle_tool_call
 from app.main import app
 from app.settings import get_settings
 
@@ -14,6 +19,7 @@ from app.settings import get_settings
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setenv("CHARTDEX_APP_DB_PATH", str(tmp_path / "app_state.sqlite3"))
     monkeypatch.setenv("CHARTDEX_METRICS_DB_PATH", str(tmp_path / "metrics.sqlite3"))
+    monkeypatch.setattr(main, "codex_execution_provider", AppServerCodexProvider(FakeCodexAgent()))
     get_settings.cache_clear()
 
     with TestClient(app) as test_client:
@@ -86,18 +92,13 @@ def test_gets_dashboard_detail_with_panels(client: TestClient) -> None:
     assert dashboard["panels"][1]["metric_key"] == "checkout_conversion"
 
 
-def test_lists_persisted_codex_threads(client: TestClient) -> None:
+def test_initial_codex_threads_are_empty(client: TestClient) -> None:
     login(client)
 
     response = client.get("/api/codex/threads")
 
     assert response.status_code == 200
-    threads = response.json()["threads"]
-    titles = {thread["title"] for thread in threads}
-    assert "Explain checkout conversion" in titles
-    checkout_thread = next(thread for thread in threads if thread["title"] == "Explain checkout conversion")
-    assert "```mermaid" in checkout_thread["turns"][1]["markdown"]
-    assert checkout_thread["context"]["dashboard_id"] == "dash_checkout_funnel"
+    assert response.json()["threads"] == []
 
 
 def test_creates_codex_thread_with_validated_context(client: TestClient) -> None:
@@ -129,8 +130,32 @@ def test_creates_codex_thread_with_validated_context(client: TestClient) -> None
     assert detail_response.status_code == 200
     completed_thread = detail_response.json()["thread"]
     assert completed_thread["status"] == "complete"
-    assert completed_thread["turns"][-1]["role"] == "assistant"
-    assert "external Codex app-server provider can replace this executor" in completed_thread["turns"][-1]["markdown"]
+    assert completed_thread["external_codex_thread_id"] == "external-thread-1"
+    assert [turn["role"] for turn in completed_thread["turns"]] == ["user", "assistant"]
+    assert completed_thread["turns"][-1]["markdown"] == (
+        "Codex answer for Android conversion dropped around Jun 2. What happened?"
+    )
+
+
+def test_codex_follow_up_continues_existing_external_thread(client: TestClient) -> None:
+    login(client)
+    create_response = client.post(
+        "/api/codex/threads",
+        json={"title": "Revenue drivers", "utterance": "What drove revenue this week?"},
+    )
+    thread_id = create_response.json()["thread"]["id"]
+
+    follow_up_response = client.post(
+        f"/api/codex/threads/{thread_id}/turns",
+        json={"utterance": "Break that down by channel."},
+    )
+
+    assert follow_up_response.status_code == 200
+    thread = client.get(f"/api/codex/threads/{thread_id}").json()["thread"]
+    assert thread["status"] == "complete"
+    assert [turn["role"] for turn in thread["turns"]] == ["user", "assistant", "user", "assistant"]
+    assert thread["turns"][2]["markdown"] == "Break that down by channel."
+    assert thread["turns"][3]["markdown"] == "Follow-up answer for Break that down by channel."
 
 
 def test_codex_thread_context_rejects_panel_from_wrong_dashboard(client: TestClient) -> None:
@@ -168,6 +193,31 @@ def test_codex_threads_are_scoped_to_owner(client: TestClient) -> None:
     assert detail_response.status_code == 404
 
 
+def test_follow_up_rejects_thread_without_external_codex_session(tmp_path: Path, client: TestClient) -> None:
+    login(client)
+    app_db_path = tmp_path / "app_state.sqlite3"
+    with sqlite3.connect(app_db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO codex_threads (
+                id, org_id, owner_user_id, title, status, context_json, created_at, updated_at
+            )
+            VALUES (
+                'thread_no_external_test', 'org_acme', 'u_admin', 'No external thread', 'complete',
+                NULL, '2026-05-17T21:10:00Z', '2026-05-17T21:10:00Z'
+            )
+            """
+        )
+
+    response = client.post(
+        "/api/codex/threads/thread_no_external_test/turns",
+        json={"utterance": "Can you continue?"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Codex thread has no external Codex session"
+
+
 def test_follow_up_rejects_running_thread(tmp_path: Path, client: TestClient) -> None:
     login(client)
     app_db_path = tmp_path / "app_state.sqlite3"
@@ -191,6 +241,33 @@ def test_follow_up_rejects_running_thread(tmp_path: Path, client: TestClient) ->
 
     assert response.status_code == 409
     assert response.json()["detail"] == "Codex thread is still running"
+
+
+def test_codex_tool_query_metrics_is_org_scoped(client: TestClient, tmp_path: Path) -> None:
+    login(client)
+    app_db_path = tmp_path / "app_state.sqlite3"
+    context = ChartDexToolContext(
+        app_db_path=app_db_path,
+        org_id="org_acme",
+        user_id="u_admin",
+        thread_id="thread_test",
+    )
+
+    result = anyio.run(
+        handle_tool_call,
+        context,
+        "chartdex",
+        "query_metrics",
+        {
+            "metrics": ["sessions", "checkout_conversion"],
+            "dimensions": ["platform"],
+            "granularity": "none",
+            "limit": 5,
+        },
+    )
+
+    assert "sessions" in result
+    assert "checkout_conversion" in result
 
 
 def test_login_sets_cookie_and_me_reads_auth_context(client: TestClient) -> None:
@@ -279,3 +356,26 @@ def login(
         "/api/auth/login",
         json={"email": email, "password": password},
     )
+
+
+class FakeCodexAgent:
+    async def run_thread(self, title: str, prompt: str, tool_context: ChartDexToolContext, on_delta=None):
+        question = prompt.split("User analytics question:\n", 1)[1].split("\n\n", 1)[0]
+        if on_delta is not None:
+            await on_delta("streamed ")
+        return CodexAgentResult(
+            external_thread_id="external-thread-1",
+            markdown=f"Codex answer for {question}",
+        )
+
+    async def continue_thread(self, external_thread_id: str, prompt: str, tool_context: ChartDexToolContext, on_delta=None):
+        question = prompt.split("Follow-up question:\n", 1)[1].split("\n\n", 1)[0]
+        if on_delta is not None:
+            await on_delta("follow-up streamed ")
+        return CodexAgentResult(
+            external_thread_id=external_thread_id,
+            markdown=f"Follow-up answer for {question}",
+        )
+
+    async def close(self) -> None:
+        return None

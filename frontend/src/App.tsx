@@ -559,6 +559,11 @@ function CodexPanel({
         </div>
       ) : null}
       <div className="min-h-0 flex-1 overflow-auto space-y-3 p-4">
+        {threads.length === 0 ? (
+          <p className="rounded-md border border-slate-800 bg-slate-950 p-4 text-sm text-slate-500">
+            No Codex threads yet.
+          </p>
+        ) : null}
         {threads.map((thread, index) => {
           const isOpen = openThreadIds.has(thread.id);
           const isActive = activeThreadId === thread.id;
