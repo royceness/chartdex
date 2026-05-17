@@ -1,8 +1,13 @@
 import sqlite3
 from collections.abc import Iterator
+from datetime import date
+import importlib.util
+import json
 from pathlib import Path
+import sys
 
 from app.auth import User, hash_password
+from app.metrics_provider import SQLiteMetricsProvider, get_metrics_provider_for_org
 
 ORG_DASHBOARDS = [
     {
@@ -71,69 +76,6 @@ DEMO_USERS = [
         "role": "analyst",
         "password": "password",
     },
-]
-
-METRIC_SERIES = [
-    ("org_acme", "revenue", "2026-05-12", 1_210_000.0),
-    ("org_acme", "revenue", "2026-05-13", 1_260_000.0),
-    ("org_acme", "revenue", "2026-05-14", 910_000.0),
-    ("org_acme", "revenue", "2026-05-15", 820_000.0),
-    ("org_acme", "revenue", "2026-05-16", 1_030_000.0),
-    ("org_acme", "revenue", "2026-05-17", 880_000.0),
-    ("org_acme", "revenue", "2026-05-18", 1_160_000.0),
-    ("org_acme", "revenue", "2026-05-19", 1_230_000.0),
-    ("org_acme", "revenue", "2026-05-20", 1_040_000.0),
-    ("org_acme", "revenue", "2026-05-21", 1_060_000.0),
-    ("org_acme", "revenue", "2026-05-22", 1_090_000.0),
-    ("org_acme", "revenue", "2026-05-23", 1_050_000.0),
-    ("org_acme", "revenue", "2026-05-24", 1_130_000.0),
-    ("org_acme", "revenue", "2026-05-25", 920_000.0),
-    ("org_acme", "revenue", "2026-05-26", 1_360_000.0),
-    ("org_acme", "revenue", "2026-05-27", 1_520_000.0),
-    ("org_acme", "revenue", "2026-05-28", 1_210_000.0),
-    ("org_acme", "revenue", "2026-05-29", 1_180_000.0),
-    ("org_acme", "revenue", "2026-05-30", 1_020_000.0),
-    ("org_acme", "revenue", "2026-05-31", 1_170_000.0),
-    ("org_acme", "revenue", "2026-06-01", 790_000.0),
-    ("org_acme", "revenue", "2026-06-02", 680_000.0),
-    ("org_acme", "revenue", "2026-06-03", 1_390_000.0),
-    ("org_acme", "revenue", "2026-06-04", 1_280_000.0),
-    ("org_acme", "revenue", "2026-06-05", 1_300_000.0),
-    ("org_acme", "revenue", "2026-06-06", 2_220_000.0),
-    ("org_acme", "revenue", "2026-06-07", 1_260_000.0),
-    ("org_acme", "revenue", "2026-06-08", 1_130_000.0),
-    ("org_acme", "revenue", "2026-06-09", 1_170_000.0),
-    ("org_acme", "revenue", "2026-06-10", 1_020_000.0),
-    ("org_acme", "conversion", "2026-05-12", 9.4),
-    ("org_acme", "conversion", "2026-05-13", 10.6),
-    ("org_acme", "conversion", "2026-05-14", 9.8),
-    ("org_acme", "conversion", "2026-05-15", 7.1),
-    ("org_acme", "conversion", "2026-05-16", 9.3),
-    ("org_acme", "conversion", "2026-05-17", 7.2),
-    ("org_acme", "conversion", "2026-05-18", 7.4),
-    ("org_acme", "conversion", "2026-05-19", 12.4),
-    ("org_acme", "conversion", "2026-05-20", 9.6),
-    ("org_acme", "conversion", "2026-05-21", 9.0),
-    ("org_acme", "conversion", "2026-05-22", 10.2),
-    ("org_acme", "conversion", "2026-05-23", 9.1),
-    ("org_acme", "conversion", "2026-05-24", 10.8),
-    ("org_acme", "conversion", "2026-05-25", 10.2),
-    ("org_acme", "conversion", "2026-05-26", 7.5),
-    ("org_acme", "conversion", "2026-05-27", 12.4),
-    ("org_acme", "conversion", "2026-05-28", 13.0),
-    ("org_acme", "conversion", "2026-05-29", 13.5),
-    ("org_acme", "conversion", "2026-05-30", 9.7),
-    ("org_acme", "conversion", "2026-05-31", 10.0),
-    ("org_acme", "conversion", "2026-06-01", 7.2),
-    ("org_acme", "conversion", "2026-06-02", 6.5),
-    ("org_acme", "conversion", "2026-06-03", 14.2),
-    ("org_acme", "conversion", "2026-06-04", 13.1),
-    ("org_acme", "conversion", "2026-06-05", 21.0),
-    ("org_acme", "conversion", "2026-06-06", 13.0),
-    ("org_acme", "conversion", "2026-06-07", 9.7),
-    ("org_acme", "conversion", "2026-06-08", 11.0),
-    ("org_acme", "conversion", "2026-06-09", 9.9),
-    ("org_acme", "conversion", "2026-06-10", 12.1),
 ]
 
 CODEX_THREADS = [
@@ -229,6 +171,9 @@ def connect(path: Path) -> sqlite3.Connection:
 
 
 def initialize_databases(app_db_path: Path, metrics_db_path: Path, demo_mode: bool) -> None:
+    if demo_mode:
+        ensure_demo_metrics_database(metrics_db_path)
+
     with connect(app_db_path) as app_db:
         app_db.execute("PRAGMA foreign_keys = ON")
         app_db.execute(
@@ -265,34 +210,51 @@ def initialize_databases(app_db_path: Path, metrics_db_path: Path, demo_mode: bo
             )
             """
         )
-        if demo_mode:
-            seed_demo_app_state(app_db)
-
-    with connect(metrics_db_path) as metrics_db:
-        metrics_db.execute(
+        app_db.execute(
             """
-            CREATE TABLE IF NOT EXISTS metric_points (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                org_id TEXT NOT NULL,
-                metric TEXT NOT NULL,
-                observed_on TEXT NOT NULL,
-                value REAL NOT NULL,
-                UNIQUE(org_id, metric, observed_on)
+            CREATE TABLE IF NOT EXISTS org_metric_providers (
+                org_id TEXT PRIMARY KEY REFERENCES orgs(id),
+                provider_type TEXT NOT NULL,
+                config_json TEXT NOT NULL
             )
             """
         )
-        metrics_db.executemany(
+        if demo_mode:
+            seed_demo_app_state(app_db, metrics_db_path)
+
+
+def ensure_demo_metrics_database(metrics_db_path: Path) -> None:
+    if metrics_db_path.exists() and metrics_database_has_required_schema(metrics_db_path):
+        return
+
+    generator_path = Path(__file__).resolve().parents[2] / "scripts" / "generate_demo_metrics.py"
+    spec = importlib.util.spec_from_file_location("generate_demo_metrics", generator_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load demo metrics generator from {generator_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    module.generate_database(
+        metrics_db_path,
+        days=180,
+        seed=42,
+        end_date=date(2026, 5, 18),
+    )
+
+
+def metrics_database_has_required_schema(metrics_db_path: Path) -> bool:
+    with sqlite3.connect(metrics_db_path) as connection:
+        row = connection.execute(
             """
-            INSERT INTO metric_points (org_id, metric, observed_on, value)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(org_id, metric, observed_on) DO UPDATE SET
-                value = excluded.value
-            """,
-            METRIC_SERIES,
-        )
+            SELECT COUNT(*) AS count
+            FROM sqlite_master
+            WHERE type = 'table' AND name IN ('metric_facts_daily', 'seed_dashboards', 'metric_catalog')
+            """
+        ).fetchone()
+    return bool(row and row[0] == 3)
 
 
-def seed_demo_app_state(app_db: sqlite3.Connection) -> None:
+def seed_demo_app_state(app_db: sqlite3.Connection, metrics_db_path: Path) -> None:
     app_db.execute(
         """
         INSERT INTO orgs (id, name)
@@ -322,6 +284,17 @@ def seed_demo_app_state(app_db: sqlite3.Connection) -> None:
             for user in DEMO_USERS
         ],
     )
+    app_db.execute(
+        """
+        INSERT INTO org_metric_providers (org_id, provider_type, config_json)
+        VALUES (?, 'sqlite', ?)
+        ON CONFLICT(org_id) DO UPDATE SET
+            provider_type = excluded.provider_type,
+            config_json = excluded.config_json
+        """,
+        (DEMO_ORG["id"], json.dumps({"db_path": str(metrics_db_path)})),
+    )
+    seed_dashboards = SQLiteMetricsProvider(metrics_db_path).list_seed_dashboards()
     app_db.executemany(
         """
         INSERT INTO dashboards (id, org_id, owner_user_id, slug, name, space, description)
@@ -332,7 +305,16 @@ def seed_demo_app_state(app_db: sqlite3.Connection) -> None:
             space = excluded.space,
             description = excluded.description
         """,
-        [{**dashboard, "org_id": DEMO_ORG["id"]} for dashboard in ORG_DASHBOARDS],
+        [
+            {
+                "id": dashboard["id"],
+                "org_id": DEMO_ORG["id"],
+                "slug": dashboard_slug(str(dashboard["id"])),
+                "name": dashboard["title"],
+                "description": dashboard["description"],
+            }
+            for dashboard in seed_dashboards
+        ],
     )
     app_db.executemany(
         """
@@ -346,6 +328,10 @@ def seed_demo_app_state(app_db: sqlite3.Connection) -> None:
         """,
         [{**dashboard, "org_id": DEMO_ORG["id"]} for dashboard in PERSONAL_DASHBOARDS],
     )
+
+
+def dashboard_slug(dashboard_id: str) -> str:
+    return dashboard_id.removeprefix("dash_").replace("_", "-")
 
 
 def get_user_by_email(app_db_path: Path, email: str) -> User | None:
@@ -419,27 +405,17 @@ def get_dashboard_summary(
 
 
 def list_metric_points(
-    metrics_db_path: Path,
+    app_db_path: Path,
     *,
     org_id: str,
     metric: str,
-) -> list[dict[str, str | float]]:
-    with connect(metrics_db_path) as metrics_db:
-        rows = metrics_db.execute(
-            """
-            SELECT metric, observed_on, value
-            FROM metric_points
-            WHERE org_id = ? AND metric = ?
-            ORDER BY observed_on
-            """,
-            (org_id, metric),
-        ).fetchall()
-    return [dict(row) for row in rows]
+) -> list[dict[str, object]]:
+    provider = get_metrics_provider_for_org(app_db_path, org_id)
+    return provider.list_metric_points(metric)
 
 
 def get_dashboard_detail(
     app_db_path: Path,
-    metrics_db_path: Path,
     *,
     dashboard_id: str,
     org_id: str,
@@ -454,107 +430,8 @@ def get_dashboard_detail(
     if not summary:
         return None
 
-    revenue = list_metric_points(metrics_db_path, org_id=org_id, metric="revenue")
-    conversion = list_metric_points(metrics_db_path, org_id=org_id, metric="conversion")
-    panels = panels_for_dashboard(str(summary["slug"]), revenue, conversion)
-    return {
-        **summary,
-        "time_range_label": "May 12 - Jun 10, 2026",
-        "panels": panels,
-    }
-
-
-def panels_for_dashboard(
-    slug: str,
-    revenue: list[dict[str, str | float]],
-    conversion: list[dict[str, str | float]],
-) -> list[dict[str, object]]:
-    if slug == "checkout-funnel":
-        return [
-            {
-                "id": "panel_revenue_over_time",
-                "title": "Revenue Over Time",
-                "type": "line",
-                "metric_key": "revenue",
-                "value_format": "currency",
-                "data": revenue,
-            },
-            {
-                "id": "panel_conversion_over_time",
-                "title": "Checkout Conversion Over Time",
-                "type": "line",
-                "metric_key": "conversion",
-                "value_format": "percent",
-                "data": conversion,
-            },
-            {
-                "id": "panel_platform_conversion",
-                "title": "Conversion Rate by Platform",
-                "type": "bar",
-                "metric_key": "conversion_by_platform",
-                "value_format": "percent",
-                "data": [
-                    {"label": "Web", "value": 14.6},
-                    {"label": "iOS", "value": 16.8},
-                    {"label": "Android", "value": 9.7},
-                ],
-            },
-            {
-                "id": "panel_checkout_funnel",
-                "title": "Checkout Funnel",
-                "type": "funnel",
-                "metric_key": "checkout_funnel",
-                "value_format": "integer",
-                "data": [
-                    {"label": "Sessions", "value": 482_128, "rate": None},
-                    {"label": "Added to Cart", "value": 191_889, "rate": 39.8},
-                    {"label": "Reached Checkout", "value": 93_215, "rate": 19.3},
-                    {"label": "Payment Info Entered", "value": 64_017, "rate": 13.3},
-                    {"label": "Purchase Completed", "value": 59_821, "rate": 12.4},
-                ],
-            },
-        ]
-    if slug == "campaign-performance":
-        return [
-            {
-                "id": "panel_campaign_revenue",
-                "title": "Campaign Revenue Over Time",
-                "type": "line",
-                "metric_key": "revenue",
-                "value_format": "currency",
-                "data": revenue,
-            },
-            {
-                "id": "panel_channel_conversion",
-                "title": "Conversion Rate by Channel",
-                "type": "bar",
-                "metric_key": "conversion_by_channel",
-                "value_format": "percent",
-                "data": [
-                    {"label": "Search", "value": 15.2},
-                    {"label": "Paid Social", "value": 11.4},
-                    {"label": "Email", "value": 18.1},
-                ],
-            },
-        ]
-    return [
-        {
-            "id": "panel_revenue_over_time",
-            "title": "Revenue Over Time",
-            "type": "line",
-            "metric_key": "revenue",
-            "value_format": "currency",
-            "data": revenue,
-        },
-        {
-            "id": "panel_conversion_over_time",
-            "title": "Conversion Over Time",
-            "type": "line",
-            "metric_key": "conversion",
-            "value_format": "percent",
-            "data": conversion,
-        },
-    ]
+    provider = get_metrics_provider_for_org(app_db_path, org_id)
+    return provider.get_dashboard_detail(summary)
 
 
 def list_codex_threads() -> list[dict[str, object]]:

@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 class Settings(BaseModel):
     app_db_path: Path = Path("backend/data/app_state.sqlite3")
-    metrics_db_path: Path = Path("backend/data/metrics.sqlite3")
+    metrics_db_path: Path = Path("data/chartdex_demo.sqlite")
     demo_mode: bool = True
     jwt_secret: str = "dev-secret-change-me"
     jwt_issuer: str = "chartdex.local"

@@ -54,11 +54,19 @@ def health() -> dict[str, Any]:
 @app.get("/api/dashboards")
 def dashboards(auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     settings = get_settings()
+    org_dashboards = list_dashboards(
+        settings.app_db_path,
+        org_id=auth.org_id,
+        space="org",
+    )
+    personal_dashboards = list_dashboards(
+        settings.app_db_path,
+        org_id=auth.org_id,
+        space="personal",
+        owner_user_id=auth.user_id,
+    )
     return {
-        "dashboards": list_dashboards(
-            settings.app_db_path,
-            org_id=auth.org_id,
-        )
+        "dashboards": [*org_dashboards, *personal_dashboards]
     }
 
 
@@ -67,7 +75,6 @@ def dashboard_detail(dashboard_id: str, auth: AuthContext = Depends(require_auth
     settings = get_settings()
     dashboard = get_dashboard_detail(
         settings.app_db_path,
-        settings.metrics_db_path,
         dashboard_id=dashboard_id,
         org_id=auth.org_id,
         user_id=auth.user_id,
@@ -87,7 +94,7 @@ def metric_points(metric: str, auth: AuthContext = Depends(require_auth)) -> dic
     settings = get_settings()
     return {
         "points": list_metric_points(
-            settings.metrics_db_path,
+            settings.app_db_path,
             org_id=auth.org_id,
             metric=metric,
         )

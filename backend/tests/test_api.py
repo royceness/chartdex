@@ -44,6 +44,20 @@ def test_lists_seeded_dashboards(client: TestClient) -> None:
     )
     assert {"org", "personal"} == {dashboard["space"] for dashboard in dashboards}
     assert {dashboard["org_id"] for dashboard in dashboards} == {"org_acme"}
+    assert {"Growth Experiments", "A/B Test Results"}.issubset(
+        {dashboard["name"] for dashboard in dashboards}
+    )
+
+
+def test_personal_dashboards_are_scoped_to_user(client: TestClient) -> None:
+    login(client, email="analyst@acme.test")
+
+    response = client.get("/api/dashboards")
+
+    assert response.status_code == 200
+    dashboards = response.json()["dashboards"]
+    personal_names = {dashboard["name"] for dashboard in dashboards if dashboard["space"] == "personal"}
+    assert personal_names == {"Data Quality"}
 
 
 def test_lists_seeded_metric_points(client: TestClient) -> None:
@@ -53,7 +67,9 @@ def test_lists_seeded_metric_points(client: TestClient) -> None:
 
     assert response.status_code == 200
     points = response.json()["points"]
-    assert points[0] == {"metric": "revenue", "observed_on": "2026-05-12", "value": 1_210_000.0}
+    assert points[0]["metric"] == "revenue"
+    assert points[0]["observed_on"] == "2026-04-19"
+    assert points[0]["value"] > 100_000
     assert len(points) == 30
 
 
@@ -65,8 +81,9 @@ def test_gets_dashboard_detail_with_panels(client: TestClient) -> None:
     assert response.status_code == 200
     dashboard = response.json()["dashboard"]
     assert dashboard["name"] == "Checkout Funnel"
-    assert [panel["type"] for panel in dashboard["panels"]] == ["line", "line", "bar", "funnel"]
-    assert dashboard["panels"][0]["data"][0]["observed_on"] == "2026-05-12"
+    assert [panel["type"] for panel in dashboard["panels"]] == ["funnel", "line", "bar", "bar"]
+    assert dashboard["panels"][1]["data"][0]["observed_on"] == "2026-04-19"
+    assert dashboard["panels"][1]["metric_key"] == "checkout_conversion"
 
 
 def test_lists_mock_codex_threads(client: TestClient) -> None:
