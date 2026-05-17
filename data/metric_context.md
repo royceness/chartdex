@@ -47,7 +47,7 @@ Important values:
 
 `EXP-002: Shipping estimator` runs around days 80-115. The hypothesis is that earlier shipping estimates reduce abandonment. Treatment should modestly improve shipping completion and checkout conversion, with a slight AOV lift.
 
-`EXP-003: checkout_v2 rollout` starts around day 130 and ramps toward the dataset end. It is the central demo experiment. Before the hidden bug period, `checkout_v2_treatment` generally improves conversion and slightly lowers payment errors. Near the end, Android treatment performance dips.
+`EXP-003: checkout_v2 rollout` starts around day 130 and ramps toward the dataset end. It is the central demo experiment. The treatment generally improves conversion and slightly lowers payment errors before late-period metrics need investigation.
 
 ## Promotions And Incidents
 
@@ -57,25 +57,11 @@ Easter / long-weekend sale runs around days 55-62 with `WELCOME10` and `FREESHIP
 
 Mid-season sale runs around days 105-112 with `GEARUP15`, strongest for email, returning customers, and VIP customers.
 
-Frost promo runs around days 160-179 with `FROST20`. Before the hidden bug, it improves revenue and conversion for jackets and backpacks, with more heavy and 3+ item carts.
+Frost promo runs around days 160-179 with `FROST20`. It is expected to improve revenue and conversion for jackets and backpacks, with more heavy and 3+ item carts.
 
 `INC-001: Payment provider degradation` is a one-day incident around day 88. Payment errors rise sharply and purchases fall, strongest on `web_desktop_windows` and `web_mobile`.
 
 `INC-002: Image CDN issue` is a one-day incident around day 122. Product views and add-to-cart drop mostly on web platforms, with a smaller revenue decline.
-
-## Internal Data-Generation Note
-
-`BUG-1772: Android checkout_v2 promo validation bug` is intentionally generated but is not known to the app user.
-
-The affected slice is:
-
-- `platform = 'android_app'`
-- `checkout_variant = 'checkout_v2_treatment'`
-- `promo_code = 'FROST20'`
-- `cart_size_bucket = '3_plus_items'`
-- `cart_weight_bucket = 'heavy'`
-
-The bug starts 7-10 days before the dataset end. Users can enter the promo code, but at payment time the discount conflicts with heavy-item shipping rules. The generated data shows promo errors and payment errors rising sharply while checkout conversion falls in this narrow slice. Globally, checkout conversion only dips slightly, so the issue should require breakdowns to diagnose.
 
 ## Seed Dashboards
 
@@ -90,5 +76,4 @@ The database includes org dashboards for Revenue Overview, Checkout Funnel, and 
 - Is the issue tied to a promo code?
 - Summarize this as an engineering follow-up.
 
-Expected final diagnosis: the dip is isolated to Android users in `checkout_v2_treatment` using `FROST20` with 3+ heavy carts. Payment errors and promo validation failures increased at the same time, suggesting a platform-specific promo validation bug rather than broad demand weakness.
-
+Expected final diagnosis should be based on metric breakdowns rather than a pre-labeled business event. A good investigation compares Android against iOS/web, checkout_v2 treatment against other variants, and promo/cart slices against nearby baseline periods.

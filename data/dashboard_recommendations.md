@@ -220,5 +220,4 @@ Seed these org dashboards by default:
 - Checkout Funnel
 - Campaign Performance
 
-Leave Experiment Rollout Health unseeded so the demo can show Codex creating it on demand. If the implementation team wants a fourth default dashboard later, this is the best candidate because it uses the same generated data and directly supports the hidden-bug investigation.
-
+Leave Experiment Rollout Health unseeded so the demo can show Codex creating it on demand. If the implementation team wants a fourth default dashboard later, this is the best candidate because it uses the same generated data and directly supports rollout anomaly investigation.

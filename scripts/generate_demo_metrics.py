@@ -908,7 +908,7 @@ def insert_metadata(connection: sqlite3.Connection, start: date, timeline: Timel
             "One-day payment provider degradation affecting all platforms.",
             {"platforms": PLATFORMS, "strongest": ["web_desktop_windows", "web_mobile"]},
             "Payment errors rise sharply and purchases fall for one day.",
-            "Visible daily incident but old enough not to be the main demo bug.",
+            "Visible daily incident for historical checkout context.",
         ),
         (
             "EXP-002",
@@ -948,7 +948,7 @@ def insert_metadata(connection: sqlite3.Connection, start: date, timeline: Timel
             "Checkout v2 ramps from a small cohort to most treatment traffic.",
             {"variants": ["checkout_v2_control", "checkout_v2_treatment"], "platforms": PLATFORMS},
             "Treatment initially improves conversion by 3-6% and lowers payment errors.",
-            "Central demo experiment; investigate late Android dip.",
+            "Central demo experiment; compare rollout health by platform and variant.",
         ),
         (
             "PROMO-004",
@@ -957,24 +957,8 @@ def insert_metadata(connection: sqlite3.Connection, start: date, timeline: Timel
             timeline.frost_promo,
             "FROST20 promotion for cold-weather gear and larger baskets.",
             {"promo_codes": ["FROST20"], "categories": ["jackets", "backpacks"], "cart_weight": ["heavy"]},
-            "Revenue and conversion improve before the hidden Android bug.",
-            "This promo interacts with BUG-1772 in the generated data.",
-        ),
-        (
-            "BUG-1772",
-            "bug",
-            "Android checkout_v2 promo validation bug",
-            timeline.hidden_bug,
-            "Generated hidden bug: Android checkout_v2 treatment users with FROST20, 3+ item heavy carts hit promo validation and payment errors.",
-            {
-                "platform": "android_app",
-                "checkout_variant": "checkout_v2_treatment",
-                "promo_code": "FROST20",
-                "cart_size_bucket": "3_plus_items",
-                "cart_weight_bucket": "heavy",
-            },
-            "Narrow slice conversion drops sharply; global conversion dips only slightly.",
-            "Internal data-generation note, not known to the app user unless discovered through breakdowns.",
+            "Revenue and conversion should improve for cold-weather gear and larger baskets.",
+            "Use this as campaign context only; investigate metric anomalies through breakdowns.",
         ),
     ]
     connection.executemany(
@@ -1647,15 +1631,15 @@ def main() -> None:
     print(f"Weekend session lift: {summary['weekend_session_lift']:.1%}")
     print(f"Payment incident error lift: {summary['payment_incident_error_lift']:.1%}")
     print(
-        "checkout_v2 treatment lift before hidden bug: "
+        "checkout_v2 treatment lift before late anomaly window: "
         f"{summary['checkout_v2_pre_bug_treatment_lift']:.1%}"
     )
     print(
-        "Hidden bug slice checkout conversion drop: "
+        "Anomaly slice checkout conversion drop: "
         f"{summary['hidden_bug_checkout_conversion_drop']:.1%}"
     )
-    print(f"Hidden bug promo error lift: {summary['hidden_bug_promo_error_lift']:.1%}")
-    print(f"Hidden bug payment error lift: {summary['hidden_bug_payment_error_lift']:.1%}")
+    print(f"Anomaly slice promo error lift: {summary['hidden_bug_promo_error_lift']:.1%}")
+    print(f"Anomaly slice payment error lift: {summary['hidden_bug_payment_error_lift']:.1%}")
     print(f"Global checkout conversion dip: {summary['global_checkout_conversion_dip']:.1%}")
     print(
         "Android checkout_v2 treatment dip: "

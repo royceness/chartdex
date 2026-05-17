@@ -90,9 +90,12 @@ def test_metadata_supports_demo_story(demo_db: tuple[Path, dict[str, object]]) -
         dashboard_titles = [
             row["title"] for row in connection.execute("SELECT title FROM seed_dashboards ORDER BY title")
         ]
-        bug_event = connection.execute(
-            "SELECT * FROM business_events WHERE id = 'BUG-1772'"
-        ).fetchone()
+        bug_event_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM business_events WHERE id = 'BUG-1772'"
+        ).fetchone()["count"]
+        event_count = connection.execute("SELECT COUNT(*) AS count FROM business_events").fetchone()[
+            "count"
+        ]
         experiments = {
             row["experiment_id"]: row["status"]
             for row in connection.execute("SELECT experiment_id, status FROM experiments")
@@ -109,8 +112,8 @@ def test_metadata_supports_demo_story(demo_db: tuple[Path, dict[str, object]]) -
         "Checkout Funnel",
         "Revenue Overview",
     ]
-    assert bug_event is not None
-    assert "not known to the app user" in bug_event["demo_hint"]
+    assert bug_event_count == 0
+    assert event_count == 9
     assert experiments == {
         "EXP-001": "completed",
         "EXP-002": "completed",
