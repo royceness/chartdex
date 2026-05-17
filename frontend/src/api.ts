@@ -6,6 +6,7 @@ export type Dashboard = {
   name: string;
   space: "org" | "personal";
   description: string;
+  agent_description: string;
 };
 
 export type DashboardDetail = Dashboard & {
@@ -20,6 +21,8 @@ export type DashboardPanel =
       type: "line";
       metric_key: string;
       value_format: "currency" | "percent" | "integer";
+      description: string;
+      agent_description: string;
       data: MetricPoint[];
     }
   | {
@@ -28,6 +31,8 @@ export type DashboardPanel =
       type: "bar" | "funnel";
       metric_key: string;
       value_format: "currency" | "percent" | "integer";
+      description: string;
+      agent_description: string;
       data: CategoryPoint[];
     };
 
@@ -55,7 +60,19 @@ export type CodexThread = {
   id: string;
   title: string;
   status: "queued" | "running" | "complete" | "failed";
+  error_message: string | null;
+  context: CodexThreadContext | null;
+  created_at: string;
+  updated_at: string;
   turns: CodexTurn[];
+};
+
+export type CodexThreadContext = {
+  dashboard_id?: string;
+  panel_id?: string;
+  metric_key?: string;
+  range_start?: string;
+  range_end?: string;
 };
 
 export type CodexTurn = {
@@ -118,6 +135,34 @@ export async function fetchDashboardDetail(dashboardId: string): Promise<Dashboa
 export async function fetchCodexThreads(): Promise<CodexThread[]> {
   const payload = await apiFetch<{ threads: CodexThread[] }>("/api/codex/threads");
   return payload.threads;
+}
+
+export async function fetchCodexThread(threadId: string): Promise<CodexThread> {
+  const payload = await apiFetch<{ thread: CodexThread }>(`/api/codex/threads/${threadId}`);
+  return payload.thread;
+}
+
+export async function createCodexThread(request: {
+  title: string;
+  utterance: string;
+  context?: CodexThreadContext;
+}): Promise<CodexThread> {
+  const payload = await apiFetch<{ thread: CodexThread }>("/api/codex/threads", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+  return payload.thread;
+}
+
+export async function appendCodexThreadTurn(
+  threadId: string,
+  request: { utterance: string },
+): Promise<CodexThread> {
+  const payload = await apiFetch<{ thread: CodexThread }>(`/api/codex/threads/${threadId}/turns`, {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+  return payload.thread;
 }
 
 export async function fetchMetric(metric: string): Promise<MetricPoint[]> {

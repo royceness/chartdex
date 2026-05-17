@@ -86,15 +86,111 @@ def test_gets_dashboard_detail_with_panels(client: TestClient) -> None:
     assert dashboard["panels"][1]["metric_key"] == "checkout_conversion"
 
 
-def test_lists_mock_codex_threads(client: TestClient) -> None:
+def test_lists_persisted_codex_threads(client: TestClient) -> None:
     login(client)
 
     response = client.get("/api/codex/threads")
 
     assert response.status_code == 200
     threads = response.json()["threads"]
-    assert threads[0]["title"] == "Explain checkout conversion"
-    assert "```mermaid" in threads[0]["turns"][1]["markdown"]
+    titles = {thread["title"] for thread in threads}
+    assert "Explain checkout conversion" in titles
+    checkout_thread = next(thread for thread in threads if thread["title"] == "Explain checkout conversion")
+    assert "```mermaid" in checkout_thread["turns"][1]["markdown"]
+    assert checkout_thread["context"]["dashboard_id"] == "dash_checkout_funnel"
+
+
+def test_creates_codex_thread_with_validated_context(client: TestClient) -> None:
+    login(client)
+
+    response = client.post(
+        "/api/codex/threads",
+        json={
+            "title": "Investigate Android checkout dip",
+            "utterance": "Android conversion dropped around Jun 2. What happened?",
+            "context": {
+                "dashboard_id": "dash_checkout_funnel",
+                "panel_id": "panel_checkout_conversion",
+                "metric_key": "checkout_conversion",
+                "range_start": "2026-06-01",
+                "range_end": "2026-06-07",
+            },
+        },
+    )
+
+    assert response.status_code == 201
+    created_thread = response.json()["thread"]
+    assert created_thread["status"] == "queued"
+    assert created_thread["turns"][0]["role"] == "user"
+    assert created_thread["context"]["panel_id"] == "panel_checkout_conversion"
+
+    detail_response = client.get(f"/api/codex/threads/{created_thread['id']}")
+
+    assert detail_response.status_code == 200
+    completed_thread = detail_response.json()["thread"]
+    assert completed_thread["status"] == "complete"
+    assert completed_thread["turns"][-1]["role"] == "assistant"
+    assert "external Codex app-server provider can replace this executor" in completed_thread["turns"][-1]["markdown"]
+
+
+def test_codex_thread_context_rejects_panel_from_wrong_dashboard(client: TestClient) -> None:
+    login(client)
+
+    response = client.post(
+        "/api/codex/threads",
+        json={
+            "title": "Bad context",
+            "utterance": "Use a mismatched panel.",
+            "context": {
+                "dashboard_id": "dash_checkout_funnel",
+                "panel_id": "panel_revenue_over_time",
+                "metric_key": "revenue",
+            },
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Panel does not belong to dashboard"
+
+
+def test_codex_threads_are_scoped_to_owner(client: TestClient) -> None:
+    login(client)
+    create_response = client.post(
+        "/api/codex/threads",
+        json={"title": "Admin-only thread", "utterance": "Keep this in my workspace."},
+    )
+    thread_id = create_response.json()["thread"]["id"]
+    client.post("/api/auth/logout")
+    login(client, email="analyst@acme.test")
+
+    detail_response = client.get(f"/api/codex/threads/{thread_id}")
+
+    assert detail_response.status_code == 404
+
+
+def test_follow_up_rejects_running_thread(tmp_path: Path, client: TestClient) -> None:
+    login(client)
+    app_db_path = tmp_path / "app_state.sqlite3"
+    with sqlite3.connect(app_db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO codex_threads (
+                id, org_id, owner_user_id, title, status, context_json, created_at, updated_at
+            )
+            VALUES (
+                'thread_busy_test', 'org_acme', 'u_admin', 'Busy thread', 'running',
+                NULL, '2026-05-17T21:10:00Z', '2026-05-17T21:10:00Z'
+            )
+            """
+        )
+
+    response = client.post(
+        "/api/codex/threads/thread_busy_test/turns",
+        json={"utterance": "Can you continue?"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Codex thread is still running"
 
 
 def test_login_sets_cookie_and_me_reads_auth_context(client: TestClient) -> None:
@@ -137,11 +233,16 @@ def test_protected_routes_require_cookie(client: TestClient) -> None:
     dashboards_response = client.get("/api/dashboards")
     dashboard_detail_response = client.get("/api/dashboards/dash_checkout_funnel")
     threads_response = client.get("/api/codex/threads")
+    create_thread_response = client.post(
+        "/api/codex/threads",
+        json={"title": "No auth", "utterance": "Should fail"},
+    )
     metrics_response = client.get("/api/metrics/revenue")
 
     assert dashboards_response.status_code == 401
     assert dashboard_detail_response.status_code == 401
     assert threads_response.status_code == 401
+    assert create_thread_response.status_code == 401
     assert metrics_response.status_code == 401
 
 

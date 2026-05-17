@@ -1,12 +1,18 @@
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 from app.auth import AuthContext, require_auth
+from app.codex_service import codex_execution_provider, validate_codex_context
 from app.database import (
+    CodexThreadBusyError,
+    append_codex_user_turn,
+    create_codex_thread,
     database_paths_exist,
+    get_codex_thread,
     get_dashboard_detail,
     initialize_databases,
     list_codex_threads,
@@ -40,6 +46,24 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+
+
+class CodexThreadContextRequest(BaseModel):
+    dashboard_id: str | None = None
+    panel_id: str | None = None
+    metric_key: str | None = None
+    range_start: str | None = None
+    range_end: str | None = None
+
+
+class CreateCodexThreadRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    utterance: str = Field(min_length=1, max_length=4000)
+    context: CodexThreadContextRequest | None = None
+
+
+class AppendCodexTurnRequest(BaseModel):
+    utterance: str = Field(min_length=1, max_length=4000)
 
 
 @app.get("/api/health")
@@ -86,7 +110,95 @@ def dashboard_detail(dashboard_id: str, auth: AuthContext = Depends(require_auth
 
 @app.get("/api/codex/threads")
 def codex_threads(auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
-    return {"threads": list_codex_threads()}
+    settings = get_settings()
+    return {
+        "threads": list_codex_threads(
+            settings.app_db_path,
+            org_id=auth.org_id,
+            user_id=auth.user_id,
+        )
+    }
+
+
+@app.post("/api/codex/threads", status_code=status.HTTP_201_CREATED)
+def create_codex_thread_route(
+    request: CreateCodexThreadRequest,
+    background_tasks: BackgroundTasks,
+    auth: AuthContext = Depends(require_auth),
+) -> dict[str, Any]:
+    settings = get_settings()
+    context = validate_codex_context(
+        settings.app_db_path,
+        org_id=auth.org_id,
+        user_id=auth.user_id,
+        context=request.context.model_dump() if request.context else None,
+    )
+    title = require_non_empty(request.title, "title")
+    utterance = require_non_empty(request.utterance, "utterance")
+    thread = create_codex_thread(
+        settings.app_db_path,
+        org_id=auth.org_id,
+        user_id=auth.user_id,
+        title=title,
+        utterance=utterance,
+        context=context,
+    )
+    background_tasks.add_task(
+        codex_execution_provider.execute_thread_turn,
+        app_db_path=settings.app_db_path,
+        thread_id=str(thread["id"]),
+        org_id=auth.org_id,
+        user_id=auth.user_id,
+    )
+    return {"thread": thread}
+
+
+@app.get("/api/codex/threads/{thread_id}")
+def codex_thread_detail(thread_id: str, auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    settings = get_settings()
+    thread = get_codex_thread(
+        settings.app_db_path,
+        thread_id=thread_id,
+        org_id=auth.org_id,
+        user_id=auth.user_id,
+    )
+    if thread is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Codex thread not found")
+    return {"thread": thread}
+
+
+@app.post("/api/codex/threads/{thread_id}/turns")
+def append_codex_thread_turn(
+    thread_id: str,
+    request: AppendCodexTurnRequest,
+    background_tasks: BackgroundTasks,
+    auth: AuthContext = Depends(require_auth),
+) -> dict[str, Any]:
+    settings = get_settings()
+    utterance = require_non_empty(request.utterance, "utterance")
+    try:
+        thread = append_codex_user_turn(
+            settings.app_db_path,
+            thread_id=thread_id,
+            org_id=auth.org_id,
+            user_id=auth.user_id,
+            utterance=utterance,
+        )
+    except CodexThreadBusyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    if thread is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Codex thread not found")
+    background_tasks.add_task(
+        codex_execution_provider.execute_thread_turn,
+        app_db_path=settings.app_db_path,
+        thread_id=thread_id,
+        org_id=auth.org_id,
+        user_id=auth.user_id,
+    )
+    return {"thread": thread}
 
 
 @app.get("/api/metrics/{metric}")
@@ -99,3 +211,13 @@ def metric_points(metric: str, auth: AuthContext = Depends(require_auth)) -> dic
             metric=metric,
         )
     }
+
+
+def require_non_empty(value: str, field_name: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{field_name} must not be blank",
+        )
+    return stripped

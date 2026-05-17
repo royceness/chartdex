@@ -1,10 +1,11 @@
 import sqlite3
 from collections.abc import Iterator
-from datetime import date
+from datetime import date, datetime, timezone
 import importlib.util
 import json
 from pathlib import Path
 import sys
+from uuid import uuid4
 
 from app.auth import User, hash_password
 from app.metrics_provider import SQLiteMetricsProvider, get_metrics_provider_for_org
@@ -78,11 +79,22 @@ DEMO_USERS = [
     },
 ]
 
-CODEX_THREADS = [
+SEEDED_CODEX_THREADS = [
     {
         "id": "thread_checkout_conversion",
+        "org_id": "org_acme",
+        "owner_user_id": "u_admin",
         "title": "Explain checkout conversion",
         "status": "complete",
+        "context": {
+            "dashboard_id": "dash_checkout_funnel",
+            "panel_id": "panel_checkout_conversion",
+            "metric_key": "checkout_conversion",
+            "range_start": "2026-05-12",
+            "range_end": "2026-06-10",
+        },
+        "created_at": "2026-05-17T20:45:00Z",
+        "updated_at": "2026-05-17T20:45:12Z",
         "turns": [
             {
                 "id": "turn_checkout_user",
@@ -112,8 +124,15 @@ CODEX_THREADS = [
     },
     {
         "id": "thread_experiment_rollout",
+        "org_id": "org_acme",
+        "owner_user_id": "u_admin",
         "title": "Create experiment rollout dashboard",
         "status": "complete",
+        "context": {
+            "dashboard_id": "dash_growth_experiments",
+        },
+        "created_at": "2026-05-17T20:50:00Z",
+        "updated_at": "2026-05-17T20:50:09Z",
         "turns": [
             {
                 "id": "turn_experiment_user",
@@ -137,8 +156,19 @@ CODEX_THREADS = [
     },
     {
         "id": "thread_android_dip",
+        "org_id": "org_acme",
+        "owner_user_id": "u_admin",
         "title": "Investigate Android dip",
-        "status": "running",
+        "status": "complete",
+        "context": {
+            "dashboard_id": "dash_checkout_funnel",
+            "panel_id": "panel_checkout_conversion",
+            "metric_key": "checkout_conversion",
+            "range_start": "2026-06-01",
+            "range_end": "2026-06-07",
+        },
+        "created_at": "2026-05-17T20:55:00Z",
+        "updated_at": "2026-05-17T20:55:18Z",
         "turns": [
             {
                 "id": "turn_android_user",
@@ -152,15 +182,79 @@ CODEX_THREADS = [
                 "markdown": "Codex is comparing Android checkout events against payment error logs and campaign mix.",
                 "created_at": "2026-05-17T20:55:10Z",
             },
+            {
+                "id": "turn_android_assistant_complete",
+                "role": "assistant",
+                "markdown": (
+                    "### Android checkout dip\n\n"
+                    "The first place to check is the payment step: Android conversion softness lines up with a higher "
+                    "payment error rate and a weaker promo-code success read in the same window."
+                ),
+                "created_at": "2026-05-17T20:55:18Z",
+            },
         ],
     },
     {
         "id": "thread_revenue_week",
+        "org_id": "org_acme",
+        "owner_user_id": "u_admin",
         "title": "What's driving revenue this week?",
-        "status": "queued",
-        "turns": [],
+        "status": "complete",
+        "context": {
+            "dashboard_id": "dash_revenue_overview",
+        },
+        "created_at": "2026-05-17T21:00:00Z",
+        "updated_at": "2026-05-17T21:00:08Z",
+        "turns": [
+            {
+                "id": "turn_revenue_week_user",
+                "role": "user",
+                "markdown": "What's driving revenue this week?",
+                "created_at": "2026-05-17T21:00:00Z",
+            },
+            {
+                "id": "turn_revenue_week_assistant",
+                "role": "assistant",
+                "markdown": (
+                    "### Revenue drivers\n\n"
+                    "Start with Revenue Overview, then compare session volume, average order value, and purchases by platform. "
+                    "If revenue moved without sessions moving, average order value is the likely next panel to inspect."
+                ),
+                "created_at": "2026-05-17T21:00:08Z",
+            },
+        ],
+    },
+    {
+        "id": "thread_data_quality",
+        "org_id": "org_acme",
+        "owner_user_id": "u_analyst",
+        "title": "Check metric freshness",
+        "status": "complete",
+        "context": {
+            "dashboard_id": "dash_data_quality",
+        },
+        "created_at": "2026-05-17T21:05:00Z",
+        "updated_at": "2026-05-17T21:05:07Z",
+        "turns": [
+            {
+                "id": "turn_data_quality_user",
+                "role": "user",
+                "markdown": "Check whether the demo metrics are fresh enough for the dashboard.",
+                "created_at": "2026-05-17T21:05:00Z",
+            },
+            {
+                "id": "turn_data_quality_assistant",
+                "role": "assistant",
+                "markdown": "### Metric freshness\n\nThe demo metrics end on `2026-05-18`, so the seeded dashboard window is current for this hackathon demo.",
+                "created_at": "2026-05-17T21:05:07Z",
+            },
+        ],
     },
 ]
+
+
+class CodexThreadBusyError(Exception):
+    pass
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -216,6 +310,35 @@ def initialize_databases(app_db_path: Path, metrics_db_path: Path, demo_mode: bo
                 org_id TEXT PRIMARY KEY REFERENCES orgs(id),
                 provider_type TEXT NOT NULL,
                 config_json TEXT NOT NULL
+            )
+            """
+        )
+        app_db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_threads (
+                id TEXT PRIMARY KEY,
+                org_id TEXT NOT NULL REFERENCES orgs(id),
+                owner_user_id TEXT NOT NULL REFERENCES users(id),
+                external_thread_id TEXT,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'complete', 'failed')),
+                error_message TEXT,
+                context_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        app_db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_turns (
+                id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL REFERENCES codex_threads(id) ON DELETE CASCADE,
+                role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool')),
+                markdown TEXT NOT NULL,
+                sort_order INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(thread_id, sort_order)
             )
             """
         )
@@ -328,6 +451,52 @@ def seed_demo_app_state(app_db: sqlite3.Connection, metrics_db_path: Path) -> No
         """,
         [{**dashboard, "org_id": DEMO_ORG["id"]} for dashboard in PERSONAL_DASHBOARDS],
     )
+    seed_demo_codex_threads(app_db)
+
+
+def seed_demo_codex_threads(app_db: sqlite3.Connection) -> None:
+    for thread in SEEDED_CODEX_THREADS:
+        app_db.execute(
+            """
+            INSERT INTO codex_threads (
+                id, org_id, owner_user_id, external_thread_id, title, status,
+                error_message, context_json, created_at, updated_at
+            )
+            VALUES (
+                :id, :org_id, :owner_user_id, NULL, :title, :status,
+                NULL, :context_json, :created_at, :updated_at
+            )
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                status = excluded.status,
+                error_message = excluded.error_message,
+                context_json = excluded.context_json,
+                updated_at = excluded.updated_at
+            """,
+            {
+                **thread,
+                "context_json": json.dumps(thread["context"], sort_keys=True),
+            },
+        )
+        app_db.executemany(
+            """
+            INSERT INTO codex_turns (id, thread_id, role, markdown, sort_order, created_at)
+            VALUES (:id, :thread_id, :role, :markdown, :sort_order, :created_at)
+            ON CONFLICT(id) DO UPDATE SET
+                role = excluded.role,
+                markdown = excluded.markdown,
+                sort_order = excluded.sort_order,
+                created_at = excluded.created_at
+            """,
+            [
+                {
+                    **turn,
+                    "thread_id": thread["id"],
+                    "sort_order": index,
+                }
+                for index, turn in enumerate(thread["turns"], start=1)
+            ],
+        )
 
 
 def dashboard_slug(dashboard_id: str) -> str:
@@ -380,7 +549,7 @@ def list_dashboards(
             """,
             params,
         ).fetchall()
-    return [dict(row) for row in rows]
+    return [enrich_dashboard_summary(dict(row)) for row in rows]
 
 
 def get_dashboard_summary(
@@ -401,7 +570,52 @@ def get_dashboard_summary(
             """,
             (dashboard_id, org_id, user_id),
         ).fetchone()
-    return dict(row) if row else None
+    return enrich_dashboard_summary(dict(row)) if row else None
+
+
+def enrich_dashboard_summary(dashboard: dict[str, str | int | None]) -> dict[str, str | int | None]:
+    return {
+        **dashboard,
+        "agent_description": dashboard_agent_description(dashboard),
+    }
+
+
+def dashboard_agent_description(dashboard: dict[str, str | int | None]) -> str:
+    slug = str(dashboard["slug"])
+    if slug == "checkout-funnel":
+        return (
+            "Use Checkout Funnel when a user asks about conversion health, step drop-off, payment problems, "
+            "promo-code success, or differences in checkout behavior by platform. It follows the path from sessions "
+            "through purchase completion and is the best starting point for Android checkout dip investigations."
+        )
+    if slug == "revenue-overview":
+        return (
+            "Use Revenue Overview when a user asks about top-line store performance: revenue, sessions, average order "
+            "value, and purchase mix by platform. It is the executive dashboard for understanding whether traffic, "
+            "conversion, or order value is driving revenue movement."
+        )
+    if slug == "campaign-performance":
+        return (
+            "Use Campaign Performance when a user asks about marketing channels, paid traffic quality, promo-code "
+            "revenue, or campaign contribution to sessions and conversion. It helps compare where acquisition spend "
+            "is producing useful commerce outcomes."
+        )
+    if slug == "growth-experiments":
+        return (
+            "Use Growth Experiments for personal analysis of rollout health, experiment exposure, uplift, and segment "
+            "performance before the dashboard is promoted into the shared org workspace."
+        )
+    if slug == "ab-test-results":
+        return (
+            "Use A/B Test Results for personal reads on pricing and checkout tests, including variant-level changes "
+            "in conversion, order value, and downstream revenue."
+        )
+    if slug == "data-quality":
+        return (
+            "Use Data Quality when a user asks whether metric freshness, instrumentation coverage, or anomaly checks "
+            "could explain a surprising dashboard read."
+        )
+    return str(dashboard["description"])
 
 
 def list_metric_points(
@@ -434,8 +648,204 @@ def get_dashboard_detail(
     return provider.get_dashboard_detail(summary)
 
 
-def list_codex_threads() -> list[dict[str, object]]:
-    return CODEX_THREADS
+def list_codex_threads(app_db_path: Path, *, org_id: str, user_id: str) -> list[dict[str, object]]:
+    with connect(app_db_path) as app_db:
+        rows = app_db.execute(
+            """
+            SELECT *
+            FROM codex_threads
+            WHERE org_id = ? AND owner_user_id = ?
+            ORDER BY updated_at DESC, created_at DESC
+            """,
+            (org_id, user_id),
+        ).fetchall()
+        return [codex_thread_payload(app_db, row) for row in rows]
+
+
+def get_codex_thread(
+    app_db_path: Path,
+    *,
+    thread_id: str,
+    org_id: str,
+    user_id: str,
+) -> dict[str, object] | None:
+    with connect(app_db_path) as app_db:
+        row = app_db.execute(
+            """
+            SELECT *
+            FROM codex_threads
+            WHERE id = ? AND org_id = ? AND owner_user_id = ?
+            """,
+            (thread_id, org_id, user_id),
+        ).fetchone()
+        return codex_thread_payload(app_db, row) if row else None
+
+
+def create_codex_thread(
+    app_db_path: Path,
+    *,
+    org_id: str,
+    user_id: str,
+    title: str,
+    utterance: str,
+    context: dict[str, object] | None,
+) -> dict[str, object]:
+    now = utc_now()
+    thread_id = f"thread_{uuid4().hex}"
+    with connect(app_db_path) as app_db:
+        app_db.execute("PRAGMA foreign_keys = ON")
+        app_db.execute(
+            """
+            INSERT INTO codex_threads (
+                id, org_id, owner_user_id, external_thread_id, title, status,
+                error_message, context_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, NULL, ?, 'queued', NULL, ?, ?, ?)
+            """,
+            (
+                thread_id,
+                org_id,
+                user_id,
+                title,
+                json.dumps(context, sort_keys=True) if context else None,
+                now,
+                now,
+            ),
+        )
+        app_db.execute(
+            """
+            INSERT INTO codex_turns (id, thread_id, role, markdown, sort_order, created_at)
+            VALUES (?, ?, 'user', ?, 1, ?)
+            """,
+            (f"turn_{uuid4().hex}", thread_id, utterance, now),
+        )
+        row = app_db.execute("SELECT * FROM codex_threads WHERE id = ?", (thread_id,)).fetchone()
+        return codex_thread_payload(app_db, row)
+
+
+def append_codex_user_turn(
+    app_db_path: Path,
+    *,
+    thread_id: str,
+    org_id: str,
+    user_id: str,
+    utterance: str,
+) -> dict[str, object] | None:
+    now = utc_now()
+    with connect(app_db_path) as app_db:
+        app_db.execute("PRAGMA foreign_keys = ON")
+        row = app_db.execute(
+            """
+            SELECT *
+            FROM codex_threads
+            WHERE id = ? AND org_id = ? AND owner_user_id = ?
+            """,
+            (thread_id, org_id, user_id),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["status"] in {"queued", "running"}:
+            raise CodexThreadBusyError("Codex thread is still running")
+        next_sort_order = next_codex_sort_order(app_db, thread_id)
+        app_db.execute(
+            """
+            INSERT INTO codex_turns (id, thread_id, role, markdown, sort_order, created_at)
+            VALUES (?, ?, 'user', ?, ?, ?)
+            """,
+            (f"turn_{uuid4().hex}", thread_id, utterance, next_sort_order, now),
+        )
+        app_db.execute(
+            """
+            UPDATE codex_threads
+            SET status = 'queued', error_message = NULL, updated_at = ?
+            WHERE id = ?
+            """,
+            (now, thread_id),
+        )
+        updated_row = app_db.execute("SELECT * FROM codex_threads WHERE id = ?", (thread_id,)).fetchone()
+        return codex_thread_payload(app_db, updated_row)
+
+
+def update_codex_thread_status(
+    app_db_path: Path,
+    *,
+    thread_id: str,
+    status: str,
+    error_message: str | None = None,
+) -> None:
+    now = utc_now()
+    with connect(app_db_path) as app_db:
+        result = app_db.execute(
+            """
+            UPDATE codex_threads
+            SET status = ?, error_message = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (status, error_message, now, thread_id),
+        )
+    if result.rowcount != 1:
+        raise RuntimeError(f"Codex thread not found: {thread_id}")
+
+
+def append_codex_assistant_turn(app_db_path: Path, *, thread_id: str, markdown: str) -> None:
+    now = utc_now()
+    with connect(app_db_path) as app_db:
+        app_db.execute("PRAGMA foreign_keys = ON")
+        app_db.execute(
+            """
+            INSERT INTO codex_turns (id, thread_id, role, markdown, sort_order, created_at)
+            VALUES (?, ?, 'assistant', ?, ?, ?)
+            """,
+            (f"turn_{uuid4().hex}", thread_id, markdown, next_codex_sort_order(app_db, thread_id), now),
+        )
+        result = app_db.execute(
+            """
+            UPDATE codex_threads
+            SET updated_at = ?
+            WHERE id = ?
+            """,
+            (now, thread_id),
+        )
+    if result.rowcount != 1:
+        raise RuntimeError(f"Codex thread not found: {thread_id}")
+
+
+def next_codex_sort_order(app_db: sqlite3.Connection, thread_id: str) -> int:
+    row = app_db.execute(
+        """
+        SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_sort_order
+        FROM codex_turns
+        WHERE thread_id = ?
+        """,
+        (thread_id,),
+    ).fetchone()
+    return int(row["next_sort_order"])
+
+
+def codex_thread_payload(app_db: sqlite3.Connection, row: sqlite3.Row) -> dict[str, object]:
+    turns = app_db.execute(
+        """
+        SELECT id, role, markdown, created_at
+        FROM codex_turns
+        WHERE thread_id = ?
+        ORDER BY sort_order
+        """,
+        (row["id"],),
+    ).fetchall()
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "status": row["status"],
+        "error_message": row["error_message"],
+        "context": json.loads(row["context_json"]) if row["context_json"] else None,
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "turns": [dict(turn) for turn in turns],
+    }
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def database_paths_exist(*paths: Path) -> Iterator[tuple[str, bool]]:

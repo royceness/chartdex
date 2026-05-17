@@ -43,6 +43,7 @@ class SQLiteMetricsProvider:
         slug = str(dashboard["slug"])
         return {
             **dashboard,
+            "agent_description": dashboard.get("agent_description", dashboard["description"]),
             "time_range_label": self.time_range_label(),
             "panels": self._panels_for_dashboard(slug),
         }
@@ -230,6 +231,8 @@ class SQLiteMetricsProvider:
             "type": "line",
             "metric_key": metric_key,
             "value_format": value_format,
+            "description": panel_description(panel_id),
+            "agent_description": panel_agent_description(panel_id),
             "data": self._daily_series(metric_key, expression),
         }
 
@@ -265,6 +268,8 @@ class SQLiteMetricsProvider:
             "type": "bar",
             "metric_key": metric_key,
             "value_format": value_format,
+            "description": panel_description(panel_id),
+            "agent_description": panel_agent_description(panel_id),
             "data": [dict(row) for row in rows],
         }
 
@@ -298,6 +303,8 @@ class SQLiteMetricsProvider:
             "type": "funnel",
             "metric_key": "checkout_funnel",
             "value_format": "integer",
+            "description": panel_description("panel_checkout_funnel"),
+            "agent_description": panel_agent_description("panel_checkout_funnel"),
             "data": [
                 {
                     "label": label,
@@ -327,3 +334,70 @@ def get_metrics_provider_for_org(app_db_path: Path, org_id: str) -> MetricsProvi
     if provider_type == "sqlite":
         return SQLiteMetricsProvider(Path(config["db_path"]))
     raise RuntimeError(f"Unsupported metrics provider type: {provider_type}")
+
+
+PANEL_DESCRIPTIONS = {
+    "panel_checkout_funnel": "Counts and rates for each checkout step in the latest 30-day window.",
+    "panel_checkout_conversion": "Daily session-to-purchase conversion rate for the checkout funnel.",
+    "panel_payment_error_by_platform": "Payment error rate by platform in the latest 30-day window.",
+    "panel_promo_success_by_code": "Promo-code validation success rate by promo code.",
+    "panel_revenue_by_channel": "Revenue contribution by marketing channel.",
+    "panel_sessions_by_channel": "Session volume by marketing channel.",
+    "panel_conversion_by_channel": "Purchase conversion rate by marketing channel.",
+    "panel_promo_revenue_by_code": "Revenue associated with each promo code.",
+    "panel_revenue_over_time": "Daily revenue for the latest 30-day window.",
+    "panel_sessions_over_time": "Daily session volume for the latest 30-day window.",
+    "panel_average_order_value": "Daily average order value for completed purchases.",
+    "panel_purchases_by_platform": "Completed purchases grouped by web, iOS, and Android.",
+}
+
+
+PANEL_AGENT_DESCRIPTIONS = {
+    "panel_checkout_funnel": (
+        "Use this panel when the user asks where checkout drop-off happens. It compares total sessions, product views, "
+        "cart additions, checkout starts, payment starts, and completed purchases, with each step's rate relative to sessions."
+    ),
+    "panel_checkout_conversion": (
+        "Use this time-series panel for questions about checkout conversion changes, dips, spikes, and selected date ranges. "
+        "It is the primary panel for investigating conversion anomalies such as an Android checkout drop around a specific week."
+    ),
+    "panel_payment_error_by_platform": (
+        "Use this panel to compare payment reliability across web, iOS, and Android. It is useful when conversion movement "
+        "may be caused by payment failures or platform-specific checkout defects."
+    ),
+    "panel_promo_success_by_code": (
+        "Use this panel when the user asks about promo-code failures, coupon validation issues, or whether a code is blocking checkout."
+    ),
+    "panel_revenue_by_channel": (
+        "Use this panel to identify which acquisition channels are contributing the most revenue in the latest dashboard window."
+    ),
+    "panel_sessions_by_channel": (
+        "Use this panel to compare traffic volume by acquisition channel and separate traffic changes from conversion or order-value changes."
+    ),
+    "panel_conversion_by_channel": (
+        "Use this panel to compare channel quality by purchase conversion rate, especially when revenue moved but traffic did not."
+    ),
+    "panel_promo_revenue_by_code": (
+        "Use this panel to understand which promo codes are associated with revenue and whether promotions are influencing campaign performance."
+    ),
+    "panel_revenue_over_time": (
+        "Use this time-series panel for top-line revenue trend questions, date-range selections, and investigations into revenue dips or spikes."
+    ),
+    "panel_sessions_over_time": (
+        "Use this time-series panel for traffic trend questions and for deciding whether revenue changes came from session volume."
+    ),
+    "panel_average_order_value": (
+        "Use this time-series panel when the user asks whether basket size or order value changed over time."
+    ),
+    "panel_purchases_by_platform": (
+        "Use this panel to compare completed purchase volume by platform and spot whether one platform is over- or under-performing."
+    ),
+}
+
+
+def panel_description(panel_id: str) -> str:
+    return PANEL_DESCRIPTIONS[panel_id]
+
+
+def panel_agent_description(panel_id: str) -> str:
+    return PANEL_AGENT_DESCRIPTIONS[panel_id]

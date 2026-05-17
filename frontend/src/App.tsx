@@ -18,11 +18,14 @@ import {
 import {
   CategoryPoint,
   CodexThread,
+  CodexThreadContext,
   Dashboard,
   DashboardDetail,
   DashboardPanel,
   MetricPoint,
   User,
+  appendCodexThreadTurn,
+  createCodexThread,
   fetchCodexThreads,
   fetchCurrentUser,
   fetchDashboardDetail,
@@ -70,6 +73,12 @@ export function App() {
     setState({ status: "ready", user, dashboards, selectedDashboard, threads });
   }
 
+  async function refreshThreads() {
+    const threads = await fetchCodexThreads();
+    setState((current) => current.status === "ready" ? { ...current, threads } : current);
+    return threads;
+  }
+
   useEffect(() => {
     let active = true;
 
@@ -96,6 +105,20 @@ export function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (state.status !== "ready" || !hasActiveCodexThread(state.threads)) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void refreshThreads();
+    }, 2_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [state]);
+
   async function handleLogin(email: string, password: string) {
     try {
       const user = await login(email, password);
@@ -115,6 +138,25 @@ export function App() {
     setSelection(null);
     const selectedDashboard = await fetchDashboardDetail(dashboardId);
     setState({ ...state, selectedDashboard });
+  }
+
+  async function handleCreateCodexThread(utterance: string) {
+    if (state.status !== "ready") {
+      return;
+    }
+    const thread = await createCodexThread({
+      title: titleFromUtterance(utterance),
+      utterance,
+      context: codexContextForCurrentView(state.selectedDashboard, selection),
+    });
+    setState((current) => current.status === "ready" ? { ...current, threads: upsertThread(current.threads, thread) } : current);
+    void refreshThreads();
+  }
+
+  async function handleAppendCodexTurn(threadId: string, utterance: string) {
+    const thread = await appendCodexThreadTurn(threadId, { utterance });
+    setState((current) => current.status === "ready" ? { ...current, threads: upsertThread(current.threads, thread) } : current);
+    void refreshThreads();
   }
 
   async function handleLogout() {
@@ -139,6 +181,8 @@ export function App() {
     <DashboardShell
       dashboards={state.dashboards}
       onLogout={handleLogout}
+      onCreateCodexThread={handleCreateCodexThread}
+      onAppendCodexTurn={handleAppendCodexTurn}
       onSelectDashboard={handleSelectDashboard}
       onSelectRange={setSelection}
       selectedDashboard={state.selectedDashboard}
@@ -151,6 +195,8 @@ export function App() {
 
 function DashboardShell({
   dashboards,
+  onAppendCodexTurn,
+  onCreateCodexThread,
   onLogout,
   onSelectDashboard,
   onSelectRange,
@@ -160,6 +206,8 @@ function DashboardShell({
   user,
 }: {
   dashboards: Dashboard[];
+  onAppendCodexTurn: (threadId: string, utterance: string) => Promise<void>;
+  onCreateCodexThread: (utterance: string) => Promise<void>;
   onLogout: () => Promise<void>;
   onSelectDashboard: (dashboardId: string) => Promise<void>;
   onSelectRange: (selection: ChartSelection | null) => void;
@@ -182,11 +230,7 @@ function DashboardShell({
       />
       <section className="flex h-screen min-h-0 flex-col overflow-hidden border-x border-slate-800 bg-[#090e18]">
         <header className="z-10 flex min-h-16 shrink-0 items-center justify-between border-b border-slate-800 bg-[#090e18]/95 px-8 backdrop-blur">
-          <input
-            aria-label="Ask a question"
-            className="h-10 w-full max-w-2xl rounded-md border border-slate-700 bg-slate-950/80 px-4 text-sm text-slate-100 outline-none ring-blue-500/20 placeholder:text-slate-500 focus:ring-4"
-            placeholder="Ask a question"
-          />
+          <AskCodexForm compact={false} onSubmit={onCreateCodexThread} placeholder="Ask a question" />
           <div className="ml-4 rounded-full border border-blue-400/50 bg-blue-500/20 px-3 py-2 text-sm text-blue-100">
             Voice
           </div>
@@ -199,7 +243,11 @@ function DashboardShell({
           />
         </div>
       </section>
-      <CodexPanel threads={threads} />
+      <CodexPanel
+        onAppendTurn={onAppendCodexTurn}
+        onCreateThread={onCreateCodexThread}
+        threads={threads}
+      />
     </main>
   );
 }
@@ -462,23 +510,54 @@ function FunnelPanel({ data }: { data: CategoryPoint[] }) {
   );
 }
 
-function CodexPanel({ threads }: { threads: CodexThread[] }) {
+function CodexPanel({
+  onAppendTurn,
+  onCreateThread,
+  threads,
+}: {
+  onAppendTurn: (threadId: string, utterance: string) => Promise<void>;
+  onCreateThread: (utterance: string) => Promise<void>;
+  threads: CodexThread[];
+}) {
   const [openThreadIds, setOpenThreadIds] = useState<Set<string>>(() => new Set(threads.slice(0, 3).map((thread) => thread.id)));
   const [activeThreadId, setActiveThreadId] = useState(threads[0]?.id ?? null);
+  const [isComposerOpen, setIsComposerOpen] = useState(false);
 
   useEffect(() => {
-    setOpenThreadIds(new Set(threads.slice(0, 3).map((thread) => thread.id)));
-    setActiveThreadId(threads[0]?.id ?? null);
+    setOpenThreadIds((current) => {
+      const next = new Set(current);
+      for (const thread of threads.slice(0, 3)) {
+        next.add(thread.id);
+      }
+      return next;
+    });
+    setActiveThreadId((current) => current ?? threads[0]?.id ?? null);
   }, [threads]);
 
   return (
     <aside className="flex h-screen min-h-0 flex-col overflow-hidden bg-[#060b14]">
       <div className="flex h-16 shrink-0 items-center justify-between border-b border-slate-800 px-5">
         <div className="text-sm font-semibold text-white">✦ Codex</div>
-        <button className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200" type="button">
+        <button
+          className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 hover:border-blue-500/50 hover:text-white"
+          onClick={() => setIsComposerOpen((current) => !current)}
+          type="button"
+        >
           + New thread
         </button>
       </div>
+      {isComposerOpen ? (
+        <div className="shrink-0 border-b border-slate-800 p-4">
+          <AskCodexForm
+            compact
+            onSubmit={async (utterance) => {
+              await onCreateThread(utterance);
+              setIsComposerOpen(false);
+            }}
+            placeholder="Start a Codex thread..."
+          />
+        </div>
+      ) : null}
       <div className="min-h-0 flex-1 overflow-auto space-y-3 p-4">
         {threads.map((thread, index) => {
           const isOpen = openThreadIds.has(thread.id);
@@ -510,7 +589,7 @@ function CodexPanel({ threads }: { threads: CodexThread[] }) {
                 <span className={statusClass(thread.status)}>{thread.status}</span>
                 <span className="text-slate-400">{isOpen ? "⌃" : "⌄"}</span>
               </button>
-              {isOpen ? <ThreadBody thread={thread} /> : null}
+              {isOpen ? <ThreadBody onAppendTurn={onAppendTurn} thread={thread} /> : null}
             </article>
           );
         })}
@@ -519,8 +598,17 @@ function CodexPanel({ threads }: { threads: CodexThread[] }) {
   );
 }
 
-function ThreadBody({ thread }: { thread: CodexThread }) {
+function ThreadBody({
+  onAppendTurn,
+  thread,
+}: {
+  onAppendTurn: (threadId: string, utterance: string) => Promise<void>;
+  thread: CodexThread;
+}) {
   const [utterance, setUtterance] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const isBusy = thread.status === "queued" || thread.status === "running";
   return (
     <div className="space-y-4 border-t border-slate-800 p-4">
       {thread.turns.length === 0 ? <p className="text-sm text-slate-500">Waiting to start.</p> : null}
@@ -530,24 +618,100 @@ function ThreadBody({ thread }: { thread: CodexThread }) {
           <MarkdownContent markdown={turn.markdown} />
         </div>
       ))}
+      {thread.error_message ? <p className="rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">{thread.error_message}</p> : null}
       <form
         className="flex gap-2 border-t border-slate-800 pt-3"
         onSubmit={(event) => {
           event.preventDefault();
-          setUtterance("");
+          const trimmed = utterance.trim();
+          if (!trimmed || isBusy) {
+            return;
+          }
+          setErrorMessage(null);
+          setIsSubmitting(true);
+          void onAppendTurn(thread.id, trimmed)
+            .then(() => {
+              setUtterance("");
+            })
+            .catch((error: unknown) => {
+              setErrorMessage(error instanceof Error ? error.message : "Unable to send follow-up");
+            })
+            .finally(() => {
+              setIsSubmitting(false);
+            });
         }}
       >
         <input
           className="min-w-0 flex-1 rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-600"
+          disabled={isBusy || isSubmitting}
           onChange={(event) => setUtterance(event.target.value)}
-          placeholder="Ask a follow-up..."
+          placeholder={isBusy ? "Codex is running..." : "Ask a follow-up..."}
           value={utterance}
         />
-        <button className="rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50" disabled={!utterance.trim()} type="submit">
-          Send
+        <button className="rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50" disabled={!utterance.trim() || isBusy || isSubmitting} type="submit">
+          {isSubmitting ? "Sending" : "Send"}
         </button>
       </form>
+      {errorMessage ? <p className="text-sm text-red-300">{errorMessage}</p> : null}
     </div>
+  );
+}
+
+function AskCodexForm({
+  compact,
+  onSubmit,
+  placeholder,
+}: {
+  compact: boolean;
+  onSubmit: (utterance: string) => Promise<void>;
+  placeholder: string;
+}) {
+  const [utterance, setUtterance] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  return (
+    <form
+      className={compact ? "space-y-2" : "flex w-full max-w-2xl gap-2"}
+      onSubmit={(event) => {
+        event.preventDefault();
+        const trimmed = utterance.trim();
+        if (!trimmed) {
+          return;
+        }
+        setErrorMessage(null);
+        setIsSubmitting(true);
+        void onSubmit(trimmed)
+          .then(() => {
+            setUtterance("");
+          })
+          .catch((error: unknown) => {
+            setErrorMessage(error instanceof Error ? error.message : "Unable to create Codex thread");
+          })
+          .finally(() => {
+            setIsSubmitting(false);
+          });
+      }}
+    >
+      <div className={compact ? "flex gap-2" : "flex min-w-0 flex-1 gap-2"}>
+        <input
+          aria-label="Ask a question"
+          className="h-10 min-w-0 flex-1 rounded-md border border-slate-700 bg-slate-950/80 px-4 text-sm text-slate-100 outline-none ring-blue-500/20 placeholder:text-slate-500 focus:ring-4"
+          disabled={isSubmitting}
+          onChange={(event) => setUtterance(event.target.value)}
+          placeholder={placeholder}
+          value={utterance}
+        />
+        <button
+          className="h-10 rounded-md bg-blue-600 px-3 text-sm font-semibold text-white disabled:opacity-50"
+          disabled={!utterance.trim() || isSubmitting}
+          type="submit"
+        >
+          {isSubmitting ? "Asking" : "Ask"}
+        </button>
+      </div>
+      {errorMessage ? <p className="text-sm text-red-300">{errorMessage}</p> : null}
+    </form>
   );
 }
 
@@ -641,6 +805,39 @@ function normalizeRange(start: string | null, end: string | null): [string, stri
     return null;
   }
   return start <= end ? [start, end] : [end, start];
+}
+
+function hasActiveCodexThread(threads: CodexThread[]) {
+  return threads.some((thread) => thread.status === "queued" || thread.status === "running");
+}
+
+function upsertThread(threads: CodexThread[], nextThread: CodexThread) {
+  const existingIndex = threads.findIndex((thread) => thread.id === nextThread.id);
+  if (existingIndex === -1) {
+    return [nextThread, ...threads];
+  }
+  return threads.map((thread) => thread.id === nextThread.id ? nextThread : thread);
+}
+
+function titleFromUtterance(utterance: string) {
+  const trimmed = utterance.trim();
+  return trimmed.length > 72 ? `${trimmed.slice(0, 69)}...` : trimmed;
+}
+
+function codexContextForCurrentView(
+  dashboard: DashboardDetail,
+  selection: ChartSelection | null,
+): CodexThreadContext {
+  if (!selection || selection.dashboardId !== dashboard.id) {
+    return { dashboard_id: dashboard.id };
+  }
+  return {
+    dashboard_id: dashboard.id,
+    panel_id: selection.panelId,
+    metric_key: selection.metricKey,
+    range_start: selection.rangeStart,
+    range_end: selection.rangeEnd,
+  };
 }
 
 function formatAxisValue(value: number | string, format: DashboardPanel["value_format"]) {
