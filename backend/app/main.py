@@ -1,14 +1,15 @@
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
-from fastapi import Depends
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth import AuthContext, require_auth
 from app.database import (
     database_paths_exist,
+    get_dashboard_detail,
     initialize_databases,
+    list_codex_threads,
     list_dashboards,
     list_metric_points,
 )
@@ -57,9 +58,28 @@ def dashboards(auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
         "dashboards": list_dashboards(
             settings.app_db_path,
             org_id=auth.org_id,
-            space="org",
         )
     }
+
+
+@app.get("/api/dashboards/{dashboard_id}")
+def dashboard_detail(dashboard_id: str, auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    settings = get_settings()
+    dashboard = get_dashboard_detail(
+        settings.app_db_path,
+        settings.metrics_db_path,
+        dashboard_id=dashboard_id,
+        org_id=auth.org_id,
+        user_id=auth.user_id,
+    )
+    if dashboard is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+    return {"dashboard": dashboard}
+
+
+@app.get("/api/codex/threads")
+def codex_threads(auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    return {"threads": list_codex_threads()}
 
 
 @app.get("/api/metrics/{metric}")

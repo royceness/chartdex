@@ -8,6 +8,29 @@ export type Dashboard = {
   description: string;
 };
 
+export type DashboardDetail = Dashboard & {
+  time_range_label: string;
+  panels: DashboardPanel[];
+};
+
+export type DashboardPanel =
+  | {
+      id: string;
+      title: string;
+      type: "line";
+      metric_key: string;
+      value_format: "currency" | "percent" | "integer";
+      data: MetricPoint[];
+    }
+  | {
+      id: string;
+      title: string;
+      type: "bar" | "funnel";
+      metric_key: string;
+      value_format: "currency" | "percent" | "integer";
+      data: CategoryPoint[];
+    };
+
 export type User = {
   user_id: string;
   email: string;
@@ -20,6 +43,26 @@ export type MetricPoint = {
   metric: string;
   observed_on: string;
   value: number;
+};
+
+export type CategoryPoint = {
+  label: string;
+  value: number;
+  rate?: number | null;
+};
+
+export type CodexThread = {
+  id: string;
+  title: string;
+  status: "queued" | "running" | "complete" | "failed";
+  turns: CodexTurn[];
+};
+
+export type CodexTurn = {
+  id: string;
+  role: "user" | "assistant" | "tool";
+  markdown: string;
+  created_at: string;
 };
 
 export async function apiFetch<T>(
@@ -65,6 +108,16 @@ export async function logout(): Promise<void> {
 export async function fetchDashboards(): Promise<Dashboard[]> {
   const payload = await apiFetch<{ dashboards: Dashboard[] }>("/api/dashboards");
   return payload.dashboards;
+}
+
+export async function fetchDashboardDetail(dashboardId: string): Promise<DashboardDetail> {
+  const payload = await apiFetch<{ dashboard: DashboardDetail }>(`/api/dashboards/${dashboardId}`);
+  return payload.dashboard;
+}
+
+export async function fetchCodexThreads(): Promise<CodexThread[]> {
+  const payload = await apiFetch<{ threads: CodexThread[] }>("/api/codex/threads");
+  return payload.threads;
 }
 
 export async function fetchMetric(metric: string): Promise<MetricPoint[]> {

@@ -32,19 +32,17 @@ def test_health_initializes_separate_databases(client: TestClient) -> None:
     assert all(payload["databases"].values())
 
 
-def test_lists_seeded_org_dashboards(client: TestClient) -> None:
+def test_lists_seeded_dashboards(client: TestClient) -> None:
     login(client)
 
     response = client.get("/api/dashboards")
 
     assert response.status_code == 200
     dashboards = response.json()["dashboards"]
-    assert [dashboard["name"] for dashboard in dashboards] == [
-        "Revenue Overview",
-        "Checkout Funnel",
-        "Campaign Performance",
-    ]
-    assert {dashboard["space"] for dashboard in dashboards} == {"org"}
+    assert {"Revenue Overview", "Checkout Funnel", "Campaign Performance"}.issubset(
+        {dashboard["name"] for dashboard in dashboards}
+    )
+    assert {"org", "personal"} == {dashboard["space"] for dashboard in dashboards}
     assert {dashboard["org_id"] for dashboard in dashboards} == {"org_acme"}
 
 
@@ -55,8 +53,31 @@ def test_lists_seeded_metric_points(client: TestClient) -> None:
 
     assert response.status_code == 200
     points = response.json()["points"]
-    assert points[0] == {"metric": "revenue", "observed_on": "2026-05-11", "value": 128400.0}
-    assert len(points) == 5
+    assert points[0] == {"metric": "revenue", "observed_on": "2026-05-12", "value": 1_210_000.0}
+    assert len(points) == 30
+
+
+def test_gets_dashboard_detail_with_panels(client: TestClient) -> None:
+    login(client)
+
+    response = client.get("/api/dashboards/dash_checkout_funnel")
+
+    assert response.status_code == 200
+    dashboard = response.json()["dashboard"]
+    assert dashboard["name"] == "Checkout Funnel"
+    assert [panel["type"] for panel in dashboard["panels"]] == ["line", "line", "bar", "funnel"]
+    assert dashboard["panels"][0]["data"][0]["observed_on"] == "2026-05-12"
+
+
+def test_lists_mock_codex_threads(client: TestClient) -> None:
+    login(client)
+
+    response = client.get("/api/codex/threads")
+
+    assert response.status_code == 200
+    threads = response.json()["threads"]
+    assert threads[0]["title"] == "Explain checkout conversion"
+    assert "```mermaid" in threads[0]["turns"][1]["markdown"]
 
 
 def test_login_sets_cookie_and_me_reads_auth_context(client: TestClient) -> None:
@@ -97,9 +118,13 @@ def test_invalid_login_fails(client: TestClient) -> None:
 
 def test_protected_routes_require_cookie(client: TestClient) -> None:
     dashboards_response = client.get("/api/dashboards")
+    dashboard_detail_response = client.get("/api/dashboards/dash_checkout_funnel")
+    threads_response = client.get("/api/codex/threads")
     metrics_response = client.get("/api/metrics/revenue")
 
     assert dashboards_response.status_code == 401
+    assert dashboard_detail_response.status_code == 401
+    assert threads_response.status_code == 401
     assert metrics_response.status_code == 401
 
 
