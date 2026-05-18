@@ -692,7 +692,7 @@ function BarPanel({ data, valueFormat }: { data: CategoryPoint[]; valueFormat: D
 
 function FunnelPanel({ data }: { data: CategoryPoint[] }) {
   return (
-    <div className="grid grid-cols-5 overflow-hidden rounded-md border border-slate-800">
+    <div className="grid grid-cols-2 overflow-hidden rounded-md border border-slate-800 md:grid-cols-3 xl:grid-cols-6">
       {data.map((step, index) => (
         <div
           className="min-h-24 border-r border-slate-800 bg-gradient-to-br from-blue-700 to-emerald-500 p-3 text-center last:border-r-0"
@@ -1156,7 +1156,7 @@ function codexContextForCurrentView(
 function formatAxisValue(value: number | string, format: DashboardPanel["value_format"]) {
   const numeric = Number(value);
   if (format === "currency") {
-    return `$${(numeric / 1_000_000).toFixed(1)}M`;
+    return formatCompactCurrency(numeric);
   }
   if (format === "percent") {
     return `${numeric}%`;
@@ -1172,6 +1172,16 @@ function formatValue(value: number, format: DashboardPanel["value_format"]) {
     return `${value.toFixed(1)}%`;
   }
   return formatInteger(value);
+}
+
+function formatCompactCurrency(value: number) {
+  const absoluteValue = Math.abs(value);
+  return new Intl.NumberFormat("en-US", {
+    currency: "USD",
+    maximumFractionDigits: absoluteValue >= 1_000 ? 1 : 0,
+    notation: "compact",
+    style: "currency",
+  }).format(value);
 }
 
 function formatInteger(value: number) {

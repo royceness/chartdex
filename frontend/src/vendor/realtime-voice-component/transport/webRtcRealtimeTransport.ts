@@ -279,6 +279,11 @@ export class WebRtcRealtimeTransport implements RealtimeTransport {
       this.state.audioElement = document.createElement("audio");
       this.state.audioElement.autoplay = true;
       this.state.audioElement.muted = !options.audioPlaybackEnabled;
+      this.state.audioElement.volume = 1;
+      this.state.audioElement.setAttribute("playsinline", "true");
+      this.state.audioElement.setAttribute("data-chartdex-realtime-audio", "true");
+      this.state.audioElement.style.display = "none";
+      document.body.appendChild(this.state.audioElement);
 
       const peerConnection = new RTCPeerConnection();
       this.state.peerConnection = peerConnection;
@@ -286,6 +291,11 @@ export class WebRtcRealtimeTransport implements RealtimeTransport {
       peerConnection.ontrack = (event) => {
         if (this.state.audioElement) {
           this.state.audioElement.srcObject = event.streams[0] ?? null;
+          void this.state.audioElement.play().catch((error: unknown) => {
+            this.onError?.(
+              error instanceof Error ? error : new Error("Realtime audio playback failed."),
+            );
+          });
         }
       };
 

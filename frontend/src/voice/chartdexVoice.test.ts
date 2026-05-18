@@ -1,12 +1,29 @@
 import { describe, expect, test, vi } from "vitest";
 
 import type { CodexThread, Dashboard, DashboardDetail } from "../api";
+import { CHARTDEX_REALTIME_MODEL, CHARTDEX_VOICE_AUDIO_CONFIG } from "./ChartDexVoiceAgent";
 import {
   buildChartDexVoiceContext,
   buildChartDexVoiceInstructions,
   buildChartDexVoiceTools,
   enrichCodexInvestigationUtterance,
 } from "./chartdexVoice";
+
+describe("ChartDex voice session config", () => {
+  test("uses the realtime audio model and tuned VAD settings", () => {
+    expect(CHARTDEX_REALTIME_MODEL).toBe("gpt-realtime");
+    expect(CHARTDEX_VOICE_AUDIO_CONFIG.input?.noiseReduction).toEqual({
+      type: "near_field",
+    });
+    expect(CHARTDEX_VOICE_AUDIO_CONFIG.input?.turnDetection).toMatchObject({
+      type: "semantic_vad",
+      createResponse: true,
+      eagerness: "low",
+      interruptResponse: false,
+    });
+    expect(CHARTDEX_VOICE_AUDIO_CONFIG.output?.voice).toBe("marin");
+  });
+});
 
 describe("ChartDex voice tools", () => {
   test("builds hierarchical dashboard and panel context", () => {

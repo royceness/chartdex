@@ -1,15 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { MutableRefObject } from "react";
 
 import {
   GhostCursorOverlay,
   createVoiceControlController,
   useGhostCursor,
   useVoiceControl,
-  type VoiceControlEvent,
   type VoiceControlController,
 } from "../vendor/realtime-voice-component";
 import "../vendor/realtime-voice-component/styles.css";
+import type { RealtimeAudioConfig, RealtimeModel } from "../vendor/realtime-voice-component";
 import type { CodexThread, CodexThreadContext, Dashboard, DashboardDetail } from "../api";
 import { fetchCodexThread } from "../api";
 import {
@@ -19,6 +18,22 @@ import {
   enrichCodexInvestigationUtterance,
   type ChartDexVoiceAdapter,
 } from "./chartdexVoice";
+
+export const CHARTDEX_REALTIME_MODEL = "gpt-realtime" satisfies RealtimeModel;
+export const CHARTDEX_VOICE_AUDIO_CONFIG = {
+  input: {
+    noiseReduction: { type: "near_field" },
+    turnDetection: {
+      type: "semantic_vad",
+      createResponse: true,
+      eagerness: "low",
+      interruptResponse: false,
+    },
+  },
+  output: {
+    voice: "marin",
+  },
+} satisfies RealtimeAudioConfig;
 
 export function ChartDexVoiceAgent({
   dashboardDetails,
@@ -54,7 +69,6 @@ export function ChartDexVoiceAgent({
   threads: CodexThread[];
 }) {
   const { cursorState, run } = useGhostCursor();
-  const lastLoggedUserTranscriptRef = useRef<string | null>(null);
   const previousThreadStatusesRef = useRef<Map<string, CodexThread["status"]> | null>(null);
   const stateRef = useRef({
     dashboardDetails,
@@ -88,48 +102,30 @@ export function ChartDexVoiceAgent({
   const adapter = useMemo<ChartDexVoiceAdapter>(
     () => ({
       addCodexThreadTurn: async (threadId, utterance) => {
-        console.info("[chartdex voice] action addCodexThreadTurn", { threadId, utterance });
         const thread = await onAppendCodexTurn(threadId, utterance);
-        const result = {
+        return {
           ok: true as const,
           thread_id: thread.id,
           title: thread.title,
           status: thread.status,
         };
-        console.info("[chartdex voice] result addCodexThreadTurn", result);
-        return result;
       },
       clearSelection: () => {
-        console.info("[chartdex voice] action clearSelection");
         onClearSelection();
-        const result = { ok: true as const };
-        console.info("[chartdex voice] result clearSelection", result);
-        return result;
+        return { ok: true as const };
       },
       createCodexInvestigation: async (title, utterance) => {
         const context = buildChartDexVoiceContext(stateRef.current);
         const enrichedUtterance = enrichCodexInvestigationUtterance(utterance, context);
-        console.info("[chartdex voice] action createCodexInvestigation", {
-          title,
-          utterance,
-          enrichedUtterance,
-          context: context.chart_selection,
-        });
         const thread = await onCreateCodexThread(enrichedUtterance, title);
-        const result = {
+        return {
           ok: true as const,
           thread_id: thread.id,
           title: thread.title,
           status: thread.status,
         };
-        console.info("[chartdex voice] result createCodexInvestigation", result);
-        return result;
       },
       focusPanel: async (panelId) => {
-        console.info("[chartdex voice] action focusPanel", {
-          currentDashboardId: stateRef.current.selectedDashboard.id,
-          panelId,
-        });
         const result = await onFocusPanel(panelId);
         const dashboard = stateRef.current.dashboardDetails[result.dashboardId];
         const panel = dashboard?.panels.find((candidate) => candidate.id === panelId);
@@ -138,92 +134,51 @@ export function ChartDexVoiceAgent({
         }
         await waitForPaint();
         await run({ element: document.getElementById(`panel-${panelId}`) }, () => undefined);
-        const toolResult = {
+        return {
           ok: true as const,
           dashboard_id: result.dashboardId,
           dashboard_name: dashboard.name,
           panel_id: result.panelId,
           panel_title: panel.title,
         };
-        console.info("[chartdex voice] result focusPanel", toolResult);
-        return toolResult;
       },
       getContext: () => {
-        const context = buildChartDexVoiceContext(stateRef.current);
-        console.info("[chartdex voice] action getContext", {
-          current_dashboard: context.current_dashboard,
-          focused_panel_id: context.focused_panel_id,
-          chart_selection: context.chart_selection,
-          dashboards: context.dashboards.map((dashboard) => ({
-            id: dashboard.id,
-            name: dashboard.name,
-            panels: dashboard.panels.map((panel) => ({
-              id: panel.id,
-              metric_key: panel.metric_key,
-              title: panel.title,
-            })),
-          })),
-        });
-        return context;
+        return buildChartDexVoiceContext(stateRef.current);
       },
       getCodexThread: async (threadId) => {
-        console.info("[chartdex voice] action getCodexThread", { threadId });
         const thread = await fetchCodexThread(threadId);
-        const result = { ok: true as const, thread };
-        console.info("[chartdex voice] result getCodexThread", {
-          thread_id: thread.id,
-          title: thread.title,
-          status: thread.status,
-          turns: thread.turns.length,
-        });
-        return result;
+        return { ok: true as const, thread };
       },
       listCodexThreads: (status) => {
         const context = buildChartDexVoiceContext(stateRef.current);
         const filteredThreads = status
           ? context.codex_threads.filter((thread) => thread.status === status)
           : context.codex_threads;
-        const result = { ok: true as const, threads: filteredThreads };
-        console.info("[chartdex voice] action listCodexThreads", { status, result });
-        return result;
+        return { ok: true as const, threads: filteredThreads };
       },
       noActionRequired: (reason) => {
-        const result = { ok: true as const, reason };
-        console.info("[chartdex voice] action noActionRequired", result);
-        return result;
+        return { ok: true as const, reason };
       },
       openCodexThread: async (threadId) => {
-        console.info("[chartdex voice] action openCodexThread", { threadId });
         const thread = await onOpenCodexThread(threadId);
         await waitForPaint();
         await run({ element: document.getElementById(`codex-thread-${threadId}`) }, () => undefined);
-        const result = {
+        return {
           ok: true as const,
           thread_id: thread.id,
           title: thread.title,
           status: thread.status,
         };
-        console.info("[chartdex voice] result openCodexThread", result);
-        return result;
       },
       openDashboard: async (dashboardId) => {
-        console.info("[chartdex voice] action openDashboard", {
-          currentDashboardId: stateRef.current.selectedDashboard.id,
-          dashboardId,
-        });
         const dashboard = await onOpenDashboard(dashboardId);
         await waitForPaint();
         await run({ element: document.getElementById(`dashboard-nav-${dashboardId}`) }, () => undefined);
-        const result = { ok: true as const, dashboard_id: dashboard.id, dashboard_name: dashboard.name };
-        console.info("[chartdex voice] result openDashboard", result);
-        return result;
+        return { ok: true as const, dashboard_id: dashboard.id, dashboard_name: dashboard.name };
       },
       resetDemo: async () => {
-        console.info("[chartdex voice] action resetDemo");
         const reset = await onResetDemo();
-        const result = { ok: true as const, reset };
-        console.info("[chartdex voice] result resetDemo", result);
-        return result;
+        return { ok: true as const, reset };
       },
     }),
     [
@@ -252,39 +207,16 @@ export function ChartDexVoiceAgent({
           credentials: "include" as const,
         },
       },
-      audio: {
-        input: {
-          turnDetection: {
-            type: "server_vad" as const,
-            createResponse: true,
-            interruptResponse: false,
-            prefixPaddingMs: 260,
-            silenceDurationMs: 650,
-            threshold: 0.68,
-          },
-        },
-        output: {
-          voice: "marin" as const,
-        },
-      },
+      audio: CHARTDEX_VOICE_AUDIO_CONFIG,
       instructions,
       maxOutputTokens: 800 as const,
-      model: "gpt-realtime-1.5" as const,
-      onEvent: (event: VoiceControlEvent) => {
-        logVoiceEvent(event, lastLoggedUserTranscriptRef);
-      },
+      model: CHARTDEX_REALTIME_MODEL,
       onError: (error: { message: string }) => {
         console.error("[chartdex voice] error", error);
         setVoiceErrorMessage(error.message);
       },
       onToolError: (call: unknown) => {
         console.error("[chartdex voice] tool error", call);
-      },
-      onToolStart: (call: unknown) => {
-        console.info("[chartdex voice] tool start", call);
-      },
-      onToolSuccess: (call: unknown) => {
-        console.info("[chartdex voice] tool success", call);
       },
       outputMode: "audio" as const,
       postToolResponse: true,
@@ -324,11 +256,6 @@ export function ChartDexVoiceAgent({
     }
 
     for (const thread of completedThreads) {
-      console.info("[chartdex voice] codex thread completed", {
-        thread_id: thread.id,
-        title: thread.title,
-        status: thread.status,
-      });
       controller.sendClientEvent({
         type: "conversation.item.create",
         item: {
@@ -436,32 +363,4 @@ function waitForPaint() {
       resolve();
     });
   });
-}
-
-function logVoiceEvent(
-  event: VoiceControlEvent,
-  lastLoggedUserTranscriptRef: MutableRefObject<string | null>,
-) {
-  if (event.type === "voice.transport.connected" || event.type === "voice.transport.disconnected") {
-    console.info("[chartdex voice] transport", event.type);
-    return;
-  }
-  if (event.type === "voice.capture.started" || event.type === "voice.capture.stopped") {
-    console.info("[chartdex voice] capture", event.type);
-    return;
-  }
-  if (event.type === "voice.no_action") {
-    console.info("[chartdex voice] no action", event.message);
-    return;
-  }
-  if (event.type !== "conversation.item.input_audio_transcription.completed") {
-    return;
-  }
-
-  const transcript = typeof event.transcript === "string" ? event.transcript.trim() : "";
-  if (!transcript || transcript === lastLoggedUserTranscriptRef.current) {
-    return;
-  }
-  lastLoggedUserTranscriptRef.current = transcript;
-  console.info("[chartdex voice] user transcript", transcript);
 }

@@ -214,7 +214,7 @@ class SQLiteMetricsProvider:
             rows = connection.execute(
                 """
                 SELECT id, event_type, name, start_date, end_date, description,
-                       affected_dimensions_json, expected_impact, demo_hint
+                       affected_dimensions_json, expected_impact
                 FROM business_events
                 ORDER BY start_date, id
                 """

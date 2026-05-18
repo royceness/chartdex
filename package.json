@@ -6,7 +6,9 @@
     "dev": "concurrently -n backend,frontend -c blue,green \"npm run dev:backend\" \"npm run dev:frontend\"",
     "dev:backend": ". .venv/bin/activate && uvicorn app.main:app --app-dir backend --reload --reload-dir backend --host 127.0.0.1 --port 8010",
     "dev:frontend": "npm --prefix frontend run dev -- --host 127.0.0.1 --port 5175",
-    "test": "npm --prefix frontend test -- --run"
+    "test": "npm run test:frontend && npm run test:backend",
+    "test:backend": ". .venv/bin/activate && pytest",
+    "test:frontend": "npm --prefix frontend test -- --run"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"
