@@ -45,7 +45,9 @@ def test_codex_app_server_agent_handles_dynamic_tool_call(monkeypatch, tmp_path:
         "turn/start",
     ]
     assert sent[1]["params"]["dynamicTools"][0]["namespace"] == "chartdex"
-    assert any(tool["namespace"] == "github" for tool in sent[1]["params"]["dynamicTools"])
+    assert sent[1]["params"]["ephemeral"] is False
+    assert sent[1]["params"]["persistExtendedHistory"] is True
+    assert {tool["namespace"] for tool in sent[1]["params"]["dynamicTools"]} == {"chartdex"}
     assert sent[3]["result"] == {
         "contentItems": [{"type": "inputText", "text": '{"metrics":[]}'}],
         "success": True,

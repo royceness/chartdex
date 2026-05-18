@@ -21,6 +21,7 @@ from app.database import (
     list_codex_threads,
     list_dashboards,
     list_metric_points,
+    reset_demo_state,
 )
 from app.routes.auth import router as auth_router
 from app.settings import get_settings
@@ -80,6 +81,18 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "databases": dict(database_paths_exist(settings.app_db_path, settings.metrics_db_path)),
+    }
+
+
+@app.post("/api/demo/reset")
+def reset_demo(auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    settings = get_settings()
+    return {
+        "reset": reset_demo_state(
+            settings.app_db_path,
+            org_id=auth.org_id,
+            user_id=auth.user_id,
+        )
     }
 
 
@@ -248,11 +261,6 @@ def append_codex_thread_turn(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Codex thread is still running",
-        )
-    if not existing_thread["external_codex_thread_id"]:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Codex thread has no external Codex session",
         )
     try:
         thread = append_codex_user_turn(

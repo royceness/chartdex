@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 import app.main as main_module
 from app.auth import verify_password
-from app.codex_agent import CodexAgentResult
+from app.codex_agent import CodexAgentError, CodexAgentResult
 from app.codex_service import AppServerCodexProvider
 from app.codex_tools import ChartDexToolContext, handle_tool_call
 from app.main import app
@@ -161,6 +161,35 @@ def test_codex_follow_up_continues_existing_external_thread(client: TestClient) 
     assert thread["turns"][3]["markdown"] == "Follow-up answer for Break that down by channel."
 
 
+def test_codex_follow_up_recovers_missing_external_thread(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recovering_agent = RecoveringFakeCodexAgent()
+    monkeypatch.setattr(main_module, "codex_execution_provider", AppServerCodexProvider(recovering_agent))
+    login(client)
+    create_response = client.post(
+        "/api/codex/threads",
+        json={"title": "Revenue drivers", "utterance": "What drove revenue this week?"},
+    )
+    thread_id = create_response.json()["thread"]["id"]
+
+    follow_up_response = client.post(
+        f"/api/codex/threads/{thread_id}/turns",
+        json={"utterance": "Break that down by channel."},
+    )
+
+    assert follow_up_response.status_code == 200
+    thread = client.get(f"/api/codex/threads/{thread_id}").json()["thread"]
+    assert thread["status"] == "complete"
+    assert thread["external_codex_thread_id"] == "external-thread-recovered"
+    assert recovering_agent.recovered_prompt is not None
+    assert "previous external Codex app-server thread is unavailable" in recovering_agent.recovered_prompt
+    assert "USER:\nWhat drove revenue this week?" in recovering_agent.recovered_prompt
+    assert "Follow-up message:\nBreak that down by channel." in recovering_agent.recovered_prompt
+    assert thread["turns"][-1]["markdown"] == "Recovered answer for Break that down by channel."
+
+
 def test_codex_thread_context_rejects_panel_from_wrong_dashboard(client: TestClient) -> None:
     login(client)
 
@@ -196,7 +225,62 @@ def test_codex_threads_are_scoped_to_owner(client: TestClient) -> None:
     assert detail_response.status_code == 404
 
 
-def test_follow_up_rejects_thread_without_external_codex_session(tmp_path: Path, client: TestClient) -> None:
+def test_demo_reset_clears_user_drafts_and_codex_threads(tmp_path: Path, client: TestClient) -> None:
+    login(client)
+    create_response = client.post(
+        "/api/codex/threads",
+        json={"title": "Temporary thread", "utterance": "Please investigate something."},
+    )
+    assert create_response.status_code == 201
+    app_db_path = tmp_path / "app_state.sqlite3"
+    with sqlite3.connect(app_db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO dashboards (
+                id, org_id, owner_user_id, slug, name, space, description,
+                status, created_by, source_thread_id
+            )
+            VALUES (
+                'dash_demo_reset_draft', 'org_acme', 'u_admin', 'demo-reset-draft',
+                'Demo Reset Draft', 'personal', 'Temporary draft dashboard.',
+                'draft', 'codex', 'thread_demo_reset'
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO dashboard_panels (
+                id, dashboard_id, org_id, owner_user_id, title, type, metric_key,
+                value_format, description, query_json, position, created_by,
+                source_thread_id, created_at, updated_at
+            )
+            VALUES (
+                'panel_demo_reset', 'dash_growth_experiments', 'org_acme', 'u_admin',
+                'Temporary Draft Panel', 'bar', 'revenue', 'currency',
+                'Temporary panel.', '{"metrics":["revenue"],"dimensions":["channel"],"granularity":"none","limit":5}',
+                100, 'codex', 'thread_demo_reset',
+                '2026-05-18T09:00:00Z', '2026-05-18T09:00:00Z'
+            )
+            """
+        )
+
+    response = client.post("/api/demo/reset")
+
+    assert response.status_code == 200
+    assert response.json()["reset"] == {
+        "codex_threads_deleted": 1,
+        "draft_dashboards_deleted": 1,
+        "draft_panels_deleted": 1,
+    }
+    assert client.get("/api/codex/threads").json()["threads"] == []
+    dashboards = client.get("/api/dashboards").json()["dashboards"]
+    assert "Demo Reset Draft" not in {dashboard["name"] for dashboard in dashboards}
+    assert {"Growth Experiments", "A/B Test Results"}.issubset(
+        {dashboard["name"] for dashboard in dashboards if dashboard["space"] == "personal"}
+    )
+
+
+def test_follow_up_can_rebuild_thread_without_external_codex_session(tmp_path: Path, client: TestClient) -> None:
     login(client)
     app_db_path = tmp_path / "app_state.sqlite3"
     with sqlite3.connect(app_db_path) as connection:
@@ -211,14 +295,25 @@ def test_follow_up_rejects_thread_without_external_codex_session(tmp_path: Path,
             )
             """
         )
+        connection.execute(
+            """
+            INSERT INTO codex_turns (id, thread_id, role, markdown, sort_order, created_at)
+            VALUES
+                ('turn_no_external_user', 'thread_no_external_test', 'user', 'What changed?', 1, '2026-05-17T21:10:00Z'),
+                ('turn_no_external_assistant', 'thread_no_external_test', 'assistant', 'The earlier worker result was lost.', 2, '2026-05-17T21:10:01Z')
+            """
+        )
 
     response = client.post(
         "/api/codex/threads/thread_no_external_test/turns",
         json={"utterance": "Can you continue?"},
     )
 
-    assert response.status_code == 409
-    assert response.json()["detail"] == "Codex thread has no external Codex session"
+    assert response.status_code == 200
+    thread = client.get("/api/codex/threads/thread_no_external_test").json()["thread"]
+    assert thread["status"] == "complete"
+    assert thread["external_codex_thread_id"] == "external-thread-1"
+    assert thread["turns"][-1]["markdown"] == "Codex answer for Can you continue?"
 
 
 def test_follow_up_rejects_running_thread(tmp_path: Path, client: TestClient) -> None:
@@ -317,6 +412,7 @@ def test_protected_routes_require_cookie(client: TestClient) -> None:
         "/api/codex/threads",
         json={"title": "No auth", "utterance": "Should fail"},
     )
+    reset_response = client.post("/api/demo/reset")
     realtime_response = client.post("/api/realtime/session")
     metrics_response = client.get("/api/metrics/revenue")
 
@@ -324,6 +420,7 @@ def test_protected_routes_require_cookie(client: TestClient) -> None:
     assert dashboard_detail_response.status_code == 401
     assert threads_response.status_code == 401
     assert create_thread_response.status_code == 401
+    assert reset_response.status_code == 401
     assert realtime_response.status_code == 401
     assert metrics_response.status_code == 401
 
@@ -428,7 +525,7 @@ def login(
 
 class FakeCodexAgent:
     async def run_thread(self, title: str, prompt: str, tool_context: ChartDexToolContext, on_delta=None):
-        question = prompt.split("User analytics question:\n", 1)[1].split("\n\n", 1)[0]
+        question = prompt_question(prompt)
         if on_delta is not None:
             await on_delta("streamed ")
         return CodexAgentResult(
@@ -437,7 +534,7 @@ class FakeCodexAgent:
         )
 
     async def continue_thread(self, external_thread_id: str, prompt: str, tool_context: ChartDexToolContext, on_delta=None):
-        question = prompt.split("Follow-up question:\n", 1)[1].split("\n\n", 1)[0]
+        question = prompt.split("Follow-up message:\n", 1)[1].split("\n\n", 1)[0]
         if on_delta is not None:
             await on_delta("follow-up streamed ")
         return CodexAgentResult(
@@ -447,3 +544,35 @@ class FakeCodexAgent:
 
     async def close(self) -> None:
         return None
+
+
+class RecoveringFakeCodexAgent:
+    def __init__(self) -> None:
+        self.recovered_prompt: str | None = None
+
+    async def run_thread(self, title: str, prompt: str, tool_context: ChartDexToolContext, on_delta=None):
+        question = prompt_question(prompt)
+        if "previous external Codex app-server thread is unavailable" in prompt:
+            self.recovered_prompt = prompt
+            return CodexAgentResult(
+                external_thread_id="external-thread-recovered",
+                markdown=f"Recovered answer for {question}",
+            )
+        return CodexAgentResult(
+            external_thread_id="external-thread-stale",
+            markdown=f"Codex answer for {question}",
+        )
+
+    async def continue_thread(self, external_thread_id: str, prompt: str, tool_context: ChartDexToolContext, on_delta=None):
+        raise CodexAgentError(
+            "Codex app-server request failed: {'code': -32600, 'message': 'thread not found: external-thread-stale'}"
+        )
+
+    async def close(self) -> None:
+        return None
+
+
+def prompt_question(prompt: str) -> str:
+    if "User message:\n" in prompt:
+        return prompt.split("User message:\n", 1)[1].split("\n\n", 1)[0]
+    return prompt.split("Follow-up message:\n", 1)[1].split("\n\n", 1)[0]

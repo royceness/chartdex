@@ -126,6 +126,21 @@ export async function logout(): Promise<void> {
   await apiFetch<{ ok: true }>("/api/auth/logout", { method: "POST" });
 }
 
+export async function resetDemo(): Promise<{
+  codex_threads_deleted: number;
+  draft_dashboards_deleted: number;
+  draft_panels_deleted: number;
+}> {
+  const payload = await apiFetch<{
+    reset: {
+      codex_threads_deleted: number;
+      draft_dashboards_deleted: number;
+      draft_panels_deleted: number;
+    };
+  }>("/api/demo/reset", { method: "POST" });
+  return payload.reset;
+}
+
 export async function fetchDashboards(): Promise<Dashboard[]> {
   const payload = await apiFetch<{ dashboards: Dashboard[] }>("/api/dashboards");
   return payload.dashboards;

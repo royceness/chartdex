@@ -11,7 +11,7 @@ beforeEach(() => {
 });
 
 describe("App", () => {
-  test("renders the authenticated dashboard shell with markdown threads", async () => {
+  test("renders the authenticated dashboard shell with Codex threads closed by default", async () => {
     mockAuthenticatedLoad();
 
     render(<App />);
@@ -24,6 +24,10 @@ describe("App", () => {
     expect(screen.getByText("Revenue Over Time")).toBeInTheDocument();
     expect(screen.getByText("Checkout Conversion Over Time")).toBeInTheDocument();
     expect(screen.getByText("✦ Codex")).toBeInTheDocument();
+    expect(screen.getByText("Explain checkout conversion")).toBeInTheDocument();
+    expect(screen.queryByText("Checkout conversion read")).not.toBeInTheDocument();
+    expect(screen.queryByText("Mermaid diagram")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Explain checkout conversion/ }));
     expect(screen.getByText("Checkout conversion read")).toBeInTheDocument();
     expect(screen.getByText("Mermaid diagram")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
@@ -148,8 +152,9 @@ describe("App", () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByPlaceholderText("Ask a follow-up...")).toBeInTheDocument();
+      expect(screen.getByText("Explain checkout conversion")).toBeInTheDocument();
     });
+    fireEvent.click(screen.getByRole("button", { name: /Explain checkout conversion/ }));
 
     fetchMock
       .mockResolvedValueOnce({
@@ -182,9 +187,184 @@ describe("App", () => {
       );
     });
   });
+
+  test("keeps manually collapsed Codex threads collapsed when thread data refreshes", async () => {
+    mockAuthenticatedLoadWithThreads([
+      {
+        ...codexThreadPayload("thread_collapsed", "Collapsed thread", "complete"),
+        turns: [
+          {
+            id: "thread_collapsed_turn_assistant",
+            role: "assistant",
+            markdown: "Collapsed thread body should stay hidden.",
+            created_at: "2026-05-17T20:45:12Z",
+          },
+        ],
+      },
+      {
+        ...codexThreadPayload("thread_active", "Active thread", "complete"),
+        turns: [
+          {
+            id: "thread_active_turn_assistant",
+            role: "assistant",
+            markdown: "Active thread body.",
+            created_at: "2026-05-17T20:45:12Z",
+          },
+        ],
+      },
+    ]);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Collapsed thread")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Collapsed thread/ }));
+    expect(screen.getByText("Collapsed thread body should stay hidden.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Collapsed thread/ }));
+    expect(screen.queryByText("Collapsed thread body should stay hidden.")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Active thread/ }));
+
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          thread: codexThreadPayload("thread_active", "Active thread", "queued"),
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          threads: [
+            {
+              ...codexThreadPayload("thread_collapsed", "Collapsed thread", "complete"),
+              turns: [
+                {
+                  id: "thread_collapsed_turn_assistant",
+                  role: "assistant",
+                  markdown: "Collapsed thread body should stay hidden.",
+                  created_at: "2026-05-17T20:45:12Z",
+                },
+              ],
+            },
+            codexThreadPayload("thread_active", "Active thread", "running"),
+          ],
+        }),
+      });
+
+    fireEvent.change(screen.getAllByPlaceholderText("Ask a follow-up...")[0], {
+      target: { value: "test" },
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "Send" })[0]);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/codex/threads/thread_active/turns",
+        expect.objectContaining({
+          body: JSON.stringify({ utterance: "test" }),
+          credentials: "include",
+          method: "POST",
+        }),
+      );
+    });
+    expect(screen.queryByText("Collapsed thread body should stay hidden.")).not.toBeInTheDocument();
+  });
+
+  test("auto-scrolls an active Codex thread as its response updates", async () => {
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+    mockAuthenticatedLoadWithThreads([
+      codexThreadWithAssistant("thread_active", "Active thread", "running", "Partial response."),
+      codexThreadWithAssistant("thread_other", "Other thread", "complete", "Other response."),
+    ]);
+
+    try {
+      render(<App />);
+
+      await waitFor(() => {
+        expect(screen.getByText("Active thread")).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /Active thread/ }));
+      expect(screen.getByText("Partial response.")).toBeInTheDocument();
+
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          threads: [
+            codexThreadWithAssistant("thread_active", "Active thread", "running", "Partial response with more streamed text."),
+            codexThreadWithAssistant("thread_other", "Other thread", "complete", "Other response."),
+          ],
+        }),
+      });
+
+      await waitFor(() => {
+        expect(scrollIntoView).toHaveBeenCalled();
+      }, { timeout: 3_500 });
+    } finally {
+      Element.prototype.scrollIntoView = originalScrollIntoView;
+    }
+  });
+
+  test("does not auto-scroll a streaming thread when another thread is focused", async () => {
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+    mockAuthenticatedLoadWithThreads([
+      codexThreadWithAssistant("thread_active", "Active thread", "running", "Partial response."),
+      codexThreadWithAssistant("thread_other", "Other thread", "complete", "Other response."),
+    ]);
+
+    try {
+      render(<App />);
+
+      await waitFor(() => {
+        expect(screen.getByText("Active thread")).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /Active thread/ }));
+      expect(screen.getByText("Partial response.")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /Other thread/ }));
+      scrollIntoView.mockClear();
+
+      const callCountBeforeRefresh = fetchMock.mock.calls.length;
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          threads: [
+            codexThreadWithAssistant("thread_active", "Active thread", "running", "Partial response with more streamed text."),
+            codexThreadWithAssistant("thread_other", "Other thread", "complete", "Other response."),
+          ],
+        }),
+      });
+
+      await waitFor(() => {
+        expect(fetchMock.mock.calls.length).toBeGreaterThan(callCountBeforeRefresh);
+      }, { timeout: 3_500 });
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = originalScrollIntoView;
+    }
+  });
 });
 
 function mockAuthenticatedLoad() {
+  mockAuthenticatedLoadWithThreads([
+    {
+      ...codexThreadPayload("thread_checkout_conversion", "Explain checkout conversion", "complete"),
+      turns: [
+        {
+          id: "turn_assistant",
+          role: "assistant",
+          markdown:
+            "### Checkout conversion read\n\n```mermaid\nflowchart LR\n  Sessions --> Purchase\n```",
+          created_at: "2026-05-17T20:45:12Z",
+        },
+      ],
+    },
+  ]);
+}
+
+function mockAuthenticatedLoadWithThreads(threads: ReturnType<typeof codexThreadPayload>[]) {
   fetchMock.mockResolvedValueOnce({
     ok: true,
     json: async () => ({
@@ -197,28 +377,15 @@ function mockAuthenticatedLoad() {
       },
     }),
   });
-  mockDashboardResponses();
+  mockDashboardResponses(threads);
 }
 
-function mockDashboardResponses() {
+function mockDashboardResponses(threads: ReturnType<typeof codexThreadPayload>[] = []) {
   mockDashboardOnlyResponses();
   fetchMock.mockResolvedValueOnce({
     ok: true,
     json: async () => ({
-      threads: [
-        {
-          ...codexThreadPayload("thread_checkout_conversion", "Explain checkout conversion", "complete"),
-          turns: [
-            {
-              id: "turn_assistant",
-              role: "assistant",
-              markdown:
-                "### Checkout conversion read\n\n```mermaid\nflowchart LR\n  Sessions --> Purchase\n```",
-              created_at: "2026-05-17T20:45:12Z",
-            },
-          ],
-        },
-      ],
+      threads,
     }),
   });
 }
@@ -338,6 +505,27 @@ function codexThreadPayload(id: string, title: string, status: "queued" | "runni
         role: "user",
         markdown: title,
         created_at: "2026-05-17T20:45:00Z",
+      },
+    ],
+  };
+}
+
+function codexThreadWithAssistant(
+  id: string,
+  title: string,
+  status: "queued" | "running" | "complete" | "failed",
+  assistantMarkdown: string,
+) {
+  return {
+    ...codexThreadPayload(id, title, status),
+    updated_at: `2026-05-17T20:45:${assistantMarkdown.length}Z`,
+    turns: [
+      ...codexThreadPayload(id, title, status).turns,
+      {
+        id: `${id}_turn_assistant`,
+        role: "assistant",
+        markdown: assistantMarkdown,
+        created_at: "2026-05-17T20:45:12Z",
       },
     ],
   };

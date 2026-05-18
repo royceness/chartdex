@@ -9,7 +9,6 @@ from uuid import uuid4
 
 from app.auth import User, hash_password
 from app.metrics_provider import SQLiteMetricsProvider, get_metrics_provider_for_org
-from app.settings import get_settings
 
 ORG_DASHBOARDS = [
     {
@@ -168,15 +167,6 @@ def initialize_databases(app_db_path: Path, metrics_db_path: Path, demo_mode: bo
         )
         app_db.execute(
             """
-            CREATE TABLE IF NOT EXISTS org_github_repositories (
-                org_id TEXT PRIMARY KEY REFERENCES orgs(id),
-                owner TEXT NOT NULL,
-                name TEXT NOT NULL
-            )
-            """
-        )
-        app_db.execute(
-            """
             CREATE TABLE IF NOT EXISTS codex_threads (
                 id TEXT PRIMARY KEY,
                 org_id TEXT NOT NULL REFERENCES orgs(id),
@@ -306,17 +296,6 @@ def seed_demo_app_state(app_db: sqlite3.Connection, metrics_db_path: Path) -> No
             config_json = excluded.config_json
         """,
         (DEMO_ORG["id"], json.dumps({"db_path": str(metrics_db_path)})),
-    )
-    github_owner, github_name = parse_github_repository(get_settings().github_repository)
-    app_db.execute(
-        """
-        INSERT INTO org_github_repositories (org_id, owner, name)
-        VALUES (?, ?, ?)
-        ON CONFLICT(org_id) DO UPDATE SET
-            owner = excluded.owner,
-            name = excluded.name
-        """,
-        (DEMO_ORG["id"], github_owner, github_name),
     )
     seed_dashboards = SQLiteMetricsProvider(metrics_db_path).list_seed_dashboards()
     app_db.executemany(
@@ -483,19 +462,6 @@ def list_metric_points(
     return provider.list_metric_points(metric)
 
 
-def get_github_repository_for_org(app_db_path: Path, org_id: str) -> dict[str, str] | None:
-    with connect(app_db_path) as app_db:
-        row = app_db.execute(
-            """
-            SELECT owner, name
-            FROM org_github_repositories
-            WHERE org_id = ?
-            """,
-            (org_id,),
-        ).fetchone()
-    return dict(row) if row else None
-
-
 def create_draft_dashboard(
     app_db_path: Path,
     *,
@@ -652,6 +618,37 @@ def list_authored_dashboard_panels(
             (dashboard_id, org_id, user_id),
         ).fetchall()
     return [authored_panel_payload(dict(row)) for row in rows]
+
+
+def reset_demo_state(app_db_path: Path, *, org_id: str, user_id: str) -> dict[str, int]:
+    with connect(app_db_path) as app_db:
+        app_db.execute("PRAGMA foreign_keys = ON")
+        panels = app_db.execute(
+            """
+            DELETE FROM dashboard_panels
+            WHERE org_id = ? AND owner_user_id = ? AND created_by = 'codex'
+            """,
+            (org_id, user_id),
+        )
+        dashboards = app_db.execute(
+            """
+            DELETE FROM dashboards
+            WHERE org_id = ? AND owner_user_id = ? AND status = 'draft' AND created_by = 'codex'
+            """,
+            (org_id, user_id),
+        )
+        threads = app_db.execute(
+            """
+            DELETE FROM codex_threads
+            WHERE org_id = ? AND owner_user_id = ?
+            """,
+            (org_id, user_id),
+        )
+    return {
+        "draft_panels_deleted": panels.rowcount,
+        "draft_dashboards_deleted": dashboards.rowcount,
+        "codex_threads_deleted": threads.rowcount,
+    }
 
 
 def authored_panel_payload(row: dict[str, object]) -> dict[str, object]:
@@ -963,13 +960,6 @@ def codex_thread_payload(app_db: sqlite3.Connection, row: sqlite3.Row) -> dict[s
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def parse_github_repository(value: str) -> tuple[str, str]:
-    parts = value.split("/")
-    if len(parts) != 2 or not all(parts):
-        raise RuntimeError("CHARTDEX_GITHUB_REPOSITORY must use owner/name")
-    return parts[0], parts[1]
 
 
 def next_dashboard_panel_position(app_db: sqlite3.Connection, dashboard_id: str) -> int:

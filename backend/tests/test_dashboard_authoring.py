@@ -17,7 +17,6 @@ def initialized_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator
     app_db_path = tmp_path / "app_state.sqlite3"
     monkeypatch.setenv("CHARTDEX_APP_DB_PATH", str(app_db_path))
     monkeypatch.setenv("CHARTDEX_METRICS_DB_PATH", str(tmp_path / "metrics.sqlite3"))
-    monkeypatch.setenv("CHARTDEX_GITHUB_REPOSITORY", "royceness/acme-outdoor-demo-store")
     get_settings.cache_clear()
     with TestClient(app):
         yield app_db_path

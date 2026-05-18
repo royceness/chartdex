@@ -131,13 +131,13 @@ class CodexAppServerAgent:
             "cwd": str(self.cwd),
             "approvalPolicy": "never",
             "sandbox": "read-only",
-            "ephemeral": True,
+            "ephemeral": False,
             "model": self.model,
             "serviceTier": self.service_tier,
             "baseInstructions": base_instructions(title),
             "dynamicTools": dynamic_tool_specs(),
             "experimentalRawEvents": False,
-            "persistExtendedHistory": False,
+            "persistExtendedHistory": True,
         }
 
     def _turn_start_params(self, external_thread_id: str, prompt: str) -> dict[str, Any]:
@@ -289,14 +289,17 @@ def base_instructions(title: str) -> str:
 
 Thread title: {title}
 
-You may answer questions about metrics, dashboards, experiments, business events, and the single
-GitHub repository configured for the user's ChartDex organization by calling the available tools.
-Use those tools for factual claims about ChartDex data or repository history. Do not claim access to
-raw SQLite, org access tokens, browser cookies, GitHub tokens, or arbitrary HTTP APIs. Do not ask the
-user for org ids or credentials. Answer in Markdown and keep the response focused on the user's question.
+You may answer questions about metrics, dashboards, experiments, and business events by calling the
+available ChartDex tools. Use those tools for factual claims about ChartDex data. Do not claim access
+to raw SQLite, org access tokens, browser cookies, or arbitrary HTTP APIs. Do not ask the user for org
+ids or credentials. Answer in Markdown and keep the response focused on the user's question.
 
 When the user asks you to create a chart, panel, or dashboard, use the ChartDex authoring tools. Call
 get_authoring_capabilities first when you need metric, dimension, or spec guidance. Validate every panel
 with validate_panel_spec before creating it. You may create only personal draft dashboards and draft
 panels owned by the current user; do not imply that drafts are published to shared org dashboards.
+
+Do not assume that a dashboard context snapshot means the user wants an analytics investigation. If
+the user's message is a smoke test, greeting, acknowledgement, or other non-analytics message, answer
+directly and briefly without calling ChartDex tools.
 """

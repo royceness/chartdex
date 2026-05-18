@@ -10,11 +10,13 @@ import {
   type VoiceControlController,
 } from "../vendor/realtime-voice-component";
 import "../vendor/realtime-voice-component/styles.css";
-import type { CodexThreadContext, Dashboard, DashboardDetail } from "../api";
+import type { CodexThread, CodexThreadContext, Dashboard, DashboardDetail } from "../api";
+import { fetchCodexThread } from "../api";
 import {
   buildChartDexVoiceContext,
   buildChartDexVoiceInstructions,
   buildChartDexVoiceTools,
+  enrichCodexInvestigationUtterance,
   type ChartDexVoiceAdapter,
 } from "./chartdexVoice";
 
@@ -23,28 +25,44 @@ export function ChartDexVoiceAgent({
   dashboards,
   focusedPanelId,
   onClearSelection,
+  onAppendCodexTurn,
+  onCreateCodexThread,
   onFocusPanel,
+  onOpenCodexThread,
   onOpenDashboard,
+  onResetDemo,
   selectedDashboard,
   selection,
+  threads,
 }: {
   dashboardDetails: Record<string, DashboardDetail>;
   dashboards: Dashboard[];
   focusedPanelId: string | null;
+  onAppendCodexTurn: (threadId: string, utterance: string) => Promise<CodexThread>;
   onClearSelection: () => void;
+  onCreateCodexThread: (utterance: string, title?: string) => Promise<CodexThread>;
   onFocusPanel: (panelId: string) => Promise<{ dashboardId: string; panelId: string }>;
+  onOpenCodexThread: (threadId: string) => Promise<CodexThread>;
   onOpenDashboard: (dashboardId: string) => Promise<DashboardDetail>;
+  onResetDemo: () => Promise<{
+    codex_threads_deleted: number;
+    draft_dashboards_deleted: number;
+    draft_panels_deleted: number;
+  }>;
   selectedDashboard: DashboardDetail;
   selection: CodexThreadContext | null;
+  threads: CodexThread[];
 }) {
   const { cursorState, run } = useGhostCursor();
   const lastLoggedUserTranscriptRef = useRef<string | null>(null);
+  const previousThreadStatusesRef = useRef<Map<string, CodexThread["status"]> | null>(null);
   const stateRef = useRef({
     dashboardDetails,
     dashboards,
     focusedPanelId,
     selectedDashboard,
     selection,
+    threads,
   });
   stateRef.current = {
     dashboardDetails,
@@ -52,6 +70,7 @@ export function ChartDexVoiceAgent({
     focusedPanelId,
     selectedDashboard,
     selection,
+    threads,
   };
   const currentVoiceContext = useMemo(
     () =>
@@ -61,17 +80,49 @@ export function ChartDexVoiceAgent({
         focusedPanelId,
         selectedDashboard,
         selection,
+        threads,
       }),
-    [dashboardDetails, dashboards, focusedPanelId, selectedDashboard, selection],
+    [dashboardDetails, dashboards, focusedPanelId, selectedDashboard, selection, threads],
   );
 
   const adapter = useMemo<ChartDexVoiceAdapter>(
     () => ({
+      addCodexThreadTurn: async (threadId, utterance) => {
+        console.info("[chartdex voice] action addCodexThreadTurn", { threadId, utterance });
+        const thread = await onAppendCodexTurn(threadId, utterance);
+        const result = {
+          ok: true as const,
+          thread_id: thread.id,
+          title: thread.title,
+          status: thread.status,
+        };
+        console.info("[chartdex voice] result addCodexThreadTurn", result);
+        return result;
+      },
       clearSelection: () => {
         console.info("[chartdex voice] action clearSelection");
         onClearSelection();
         const result = { ok: true as const };
         console.info("[chartdex voice] result clearSelection", result);
+        return result;
+      },
+      createCodexInvestigation: async (title, utterance) => {
+        const context = buildChartDexVoiceContext(stateRef.current);
+        const enrichedUtterance = enrichCodexInvestigationUtterance(utterance, context);
+        console.info("[chartdex voice] action createCodexInvestigation", {
+          title,
+          utterance,
+          enrichedUtterance,
+          context: context.chart_selection,
+        });
+        const thread = await onCreateCodexThread(enrichedUtterance, title);
+        const result = {
+          ok: true as const,
+          thread_id: thread.id,
+          title: thread.title,
+          status: thread.status,
+        };
+        console.info("[chartdex voice] result createCodexInvestigation", result);
         return result;
       },
       focusPanel: async (panelId) => {
@@ -115,9 +166,44 @@ export function ChartDexVoiceAgent({
         });
         return context;
       },
+      getCodexThread: async (threadId) => {
+        console.info("[chartdex voice] action getCodexThread", { threadId });
+        const thread = await fetchCodexThread(threadId);
+        const result = { ok: true as const, thread };
+        console.info("[chartdex voice] result getCodexThread", {
+          thread_id: thread.id,
+          title: thread.title,
+          status: thread.status,
+          turns: thread.turns.length,
+        });
+        return result;
+      },
+      listCodexThreads: (status) => {
+        const context = buildChartDexVoiceContext(stateRef.current);
+        const filteredThreads = status
+          ? context.codex_threads.filter((thread) => thread.status === status)
+          : context.codex_threads;
+        const result = { ok: true as const, threads: filteredThreads };
+        console.info("[chartdex voice] action listCodexThreads", { status, result });
+        return result;
+      },
       noActionRequired: (reason) => {
         const result = { ok: true as const, reason };
         console.info("[chartdex voice] action noActionRequired", result);
+        return result;
+      },
+      openCodexThread: async (threadId) => {
+        console.info("[chartdex voice] action openCodexThread", { threadId });
+        const thread = await onOpenCodexThread(threadId);
+        await waitForPaint();
+        await run({ element: document.getElementById(`codex-thread-${threadId}`) }, () => undefined);
+        const result = {
+          ok: true as const,
+          thread_id: thread.id,
+          title: thread.title,
+          status: thread.status,
+        };
+        console.info("[chartdex voice] result openCodexThread", result);
         return result;
       },
       openDashboard: async (dashboardId) => {
@@ -132,8 +218,24 @@ export function ChartDexVoiceAgent({
         console.info("[chartdex voice] result openDashboard", result);
         return result;
       },
+      resetDemo: async () => {
+        console.info("[chartdex voice] action resetDemo");
+        const reset = await onResetDemo();
+        const result = { ok: true as const, reset };
+        console.info("[chartdex voice] result resetDemo", result);
+        return result;
+      },
     }),
-    [onClearSelection, onFocusPanel, onOpenDashboard, run],
+    [
+      onAppendCodexTurn,
+      onClearSelection,
+      onCreateCodexThread,
+      onFocusPanel,
+      onOpenCodexThread,
+      onOpenDashboard,
+      onResetDemo,
+      run,
+    ],
   );
   const tools = useMemo(() => buildChartDexVoiceTools(adapter), [adapter]);
   const [voiceErrorMessage, setVoiceErrorMessage] = useState<string | null>(null);
@@ -200,6 +302,52 @@ export function ChartDexVoiceAgent({
   useEffect(() => {
     controller.configure(controllerOptions);
   }, [controller, controllerOptions]);
+
+  useEffect(() => {
+    const nextStatuses = new Map(threads.map((thread) => [thread.id, thread.status]));
+    const previousStatuses = previousThreadStatusesRef.current;
+    previousThreadStatusesRef.current = nextStatuses;
+
+    if (!previousStatuses || !runtime.connected) {
+      return;
+    }
+
+    const completedThreads = threads.filter((thread) => {
+      const previousStatus = previousStatuses.get(thread.id);
+      return (
+        (previousStatus === "queued" || previousStatus === "running") &&
+        (thread.status === "complete" || thread.status === "failed")
+      );
+    });
+    if (completedThreads.length === 0) {
+      return;
+    }
+
+    for (const thread of completedThreads) {
+      console.info("[chartdex voice] codex thread completed", {
+        thread_id: thread.id,
+        title: thread.title,
+        status: thread.status,
+      });
+      controller.sendClientEvent({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text:
+                `Codex investigation completed: "${thread.title}" (${thread.id}) with status ${thread.status}. ` +
+                "Call get_codex_thread if you need the findings, then briefly notify the user. " +
+                "Use open_codex_thread if showing the thread would help.",
+            },
+          ],
+        },
+      });
+      controller.requestResponse();
+    }
+  }, [controller, runtime.connected, threads]);
 
   useEffect(() => {
     if (destroyTimerRef.current !== null) {

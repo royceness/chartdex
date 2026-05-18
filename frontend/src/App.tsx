@@ -32,6 +32,7 @@ import {
   fetchDashboards,
   login,
   logout,
+  resetDemo,
 } from "./api";
 import { ChartDexVoiceAgent } from "./voice/ChartDexVoiceAgent";
 
@@ -41,6 +42,11 @@ type ChartSelection = {
   metricKey: string;
   rangeStart: string;
   rangeEnd: string;
+};
+
+type CodexThreadFocusRequest = {
+  requestId: number;
+  threadId: string;
 };
 
 type LoadState =
@@ -219,23 +225,38 @@ export function App() {
     setSelection(null);
   }
 
-  async function handleCreateCodexThread(utterance: string) {
+  async function handleCreateCodexThread(utterance: string, title = titleFromUtterance(utterance)): Promise<CodexThread> {
     if (state.status !== "ready") {
-      return;
+      throw new Error("ChartDex is not ready");
     }
     const thread = await createCodexThread({
-      title: titleFromUtterance(utterance),
+      title,
       utterance,
       context: codexContextForCurrentView(state.selectedDashboard, selection),
     });
     setState((current) => current.status === "ready" ? { ...current, threads: upsertThread(current.threads, thread) } : current);
     void refreshThreads(true);
+    return thread;
   }
 
-  async function handleAppendCodexTurn(threadId: string, utterance: string) {
+  async function handleAppendCodexTurn(threadId: string, utterance: string): Promise<CodexThread> {
     const thread = await appendCodexThreadTurn(threadId, { utterance });
     setState((current) => current.status === "ready" ? { ...current, threads: upsertThread(current.threads, thread) } : current);
     void refreshThreads(true);
+    return thread;
+  }
+
+  async function handleResetDemo() {
+    if (state.status !== "ready") {
+      throw new Error("ChartDex is not ready");
+    }
+    const reset = await resetDemo();
+    const dashboardState = await loadDashboardState();
+    const threads = await fetchCodexThreads();
+    setSelection(null);
+    setFocusedPanelId(null);
+    setState((current) => current.status === "ready" ? { ...current, ...dashboardState, threads } : current);
+    return reset;
   }
 
   async function handleLogout() {
@@ -267,6 +288,7 @@ export function App() {
       onCreateCodexThread={handleCreateCodexThread}
       onAppendCodexTurn={handleAppendCodexTurn}
       onFocusPanel={handleFocusPanel}
+      onResetDemo={handleResetDemo}
       onSelectDashboard={handleSelectDashboard}
       onSelectRange={handleSelectRange}
       selectedDashboard={state.selectedDashboard}
@@ -286,6 +308,7 @@ function DashboardShell({
   onCreateCodexThread,
   onFocusPanel,
   onLogout,
+  onResetDemo,
   onSelectDashboard,
   onSelectRange,
   selectedDashboard,
@@ -296,11 +319,16 @@ function DashboardShell({
   dashboards: Dashboard[];
   dashboardDetails: Record<string, DashboardDetail>;
   focusedPanelId: string | null;
-  onAppendCodexTurn: (threadId: string, utterance: string) => Promise<void>;
+  onAppendCodexTurn: (threadId: string, utterance: string) => Promise<CodexThread>;
   onClearSelection: () => void;
-  onCreateCodexThread: (utterance: string) => Promise<void>;
+  onCreateCodexThread: (utterance: string, title?: string) => Promise<CodexThread>;
   onFocusPanel: (panelId: string) => Promise<{ dashboardId: string; panelId: string }>;
   onLogout: () => Promise<void>;
+  onResetDemo: () => Promise<{
+    codex_threads_deleted: number;
+    draft_dashboards_deleted: number;
+    draft_panels_deleted: number;
+  }>;
   onSelectDashboard: (dashboardId: string) => Promise<DashboardDetail>;
   onSelectRange: (selection: ChartSelection | null) => void;
   selectedDashboard: DashboardDetail;
@@ -312,6 +340,7 @@ function DashboardShell({
   const personalDashboards = dashboards.filter((dashboard) => dashboard.space === "personal");
   const panelRefs = useRef(new Map<string, HTMLElement>());
   const dashboardScrollRef = useRef<HTMLDivElement>(null);
+  const [codexThreadFocusRequest, setCodexThreadFocusRequest] = useState<CodexThreadFocusRequest | null>(null);
   const registerPanel = useCallback((panelId: string, element: HTMLElement | null) => {
     if (element) {
       panelRefs.current.set(panelId, element);
@@ -326,6 +355,17 @@ function DashboardShell({
       return dashboard;
     },
     [onSelectDashboard],
+  );
+  const openCodexThread = useCallback(
+    async (threadId: string) => {
+      const thread = threads.find((candidate) => candidate.id === threadId);
+      if (!thread) {
+        throw new Error(`Codex thread not found: ${threadId}`);
+      }
+      setCodexThreadFocusRequest({ requestId: Date.now(), threadId });
+      return thread;
+    },
+    [threads],
   );
 
   useEffect(() => {
@@ -354,11 +394,16 @@ function DashboardShell({
             dashboardDetails={dashboardDetails}
             dashboards={dashboards}
             focusedPanelId={focusedPanelId}
+            onAppendCodexTurn={onAppendCodexTurn}
             onClearSelection={onClearSelection}
+            onCreateCodexThread={onCreateCodexThread}
             onFocusPanel={onFocusPanel}
+            onOpenCodexThread={openCodexThread}
             onOpenDashboard={selectDashboardAtTop}
+            onResetDemo={onResetDemo}
             selectedDashboard={selectedDashboard}
             selection={selection ? codexContextForCurrentView(selectedDashboard, selection) : null}
+            threads={threads}
           />
         </header>
         <div className="min-h-0 flex-1 overflow-auto" ref={dashboardScrollRef}>
@@ -372,6 +417,7 @@ function DashboardShell({
         </div>
       </section>
       <CodexPanel
+        focusRequest={codexThreadFocusRequest}
         onAppendTurn={onAppendCodexTurn}
         onCreateThread={onCreateCodexThread}
         threads={threads}
@@ -663,31 +709,112 @@ function FunnelPanel({ data }: { data: CategoryPoint[] }) {
 }
 
 function CodexPanel({
+  focusRequest,
   onAppendTurn,
   onCreateThread,
   threads,
 }: {
-  onAppendTurn: (threadId: string, utterance: string) => Promise<void>;
-  onCreateThread: (utterance: string) => Promise<void>;
+  focusRequest: CodexThreadFocusRequest | null;
+  onAppendTurn: (threadId: string, utterance: string) => Promise<CodexThread>;
+  onCreateThread: (utterance: string, title?: string) => Promise<CodexThread>;
   threads: CodexThread[];
 }) {
-  const [openThreadIds, setOpenThreadIds] = useState<Set<string>>(() => new Set(threads.slice(0, 3).map((thread) => thread.id)));
+  const [openThreadIds, setOpenThreadIds] = useState<Set<string>>(() => new Set());
   const [activeThreadId, setActiveThreadId] = useState(threads[0]?.id ?? null);
   const [isComposerOpen, setIsComposerOpen] = useState(false);
+  const knownThreadIdsRef = useRef(new Set(threads.map((thread) => thread.id)));
+  const threadScrollContainerRef = useRef<HTMLDivElement>(null);
+  const threadRefs = useRef(new Map<string, HTMLElement>());
+  const threadUpdateSignaturesRef = useRef(new Map(threads.map((thread) => [thread.id, threadUpdateSignature(thread)])));
+  const userFocusedThreadIdRef = useRef<string | null>(null);
+  const registerThread = useCallback((threadId: string, element: HTMLElement | null) => {
+    if (element) {
+      threadRefs.current.set(threadId, element);
+      return;
+    }
+    threadRefs.current.delete(threadId);
+  }, []);
 
   useEffect(() => {
-    setOpenThreadIds((current) => {
-      const next = new Set(current);
-      for (const thread of threads.slice(0, 3)) {
-        next.add(thread.id);
+    const knownThreadIds = knownThreadIdsRef.current;
+    const newThreadIds = threads
+      .filter((thread) => !knownThreadIds.has(thread.id))
+      .map((thread) => thread.id);
+
+    if (newThreadIds.length > 0) {
+      setOpenThreadIds((current) => {
+        const next = new Set(current);
+        for (const threadId of newThreadIds) {
+          next.add(threadId);
+        }
+        return next;
+      });
+      for (const threadId of newThreadIds) {
+        knownThreadIds.add(threadId);
       }
-      return next;
-    });
-    setActiveThreadId((current) => current ?? threads[0]?.id ?? null);
+    }
+
+    setActiveThreadId((current) =>
+      current && threads.some((thread) => thread.id === current)
+        ? current
+        : threads[0]?.id ?? null,
+    );
   }, [threads]);
 
+  useEffect(() => {
+    if (!focusRequest) {
+      return;
+    }
+    setActiveThreadId(focusRequest.threadId);
+    setOpenThreadIds((current) => {
+      const next = new Set(current);
+      next.add(focusRequest.threadId);
+      return next;
+    });
+    window.requestAnimationFrame(() => {
+      threadRefs.current.get(focusRequest.threadId)?.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+      });
+    });
+  }, [focusRequest]);
+
+  useEffect(() => {
+    const previousSignatures = threadUpdateSignaturesRef.current;
+    const nextSignatures = new Map(threads.map((thread) => [thread.id, threadUpdateSignature(thread)]));
+    threadUpdateSignaturesRef.current = nextSignatures;
+
+    const changedThread = threads.find((thread) => previousSignatures.get(thread.id) !== nextSignatures.get(thread.id));
+    if (!changedThread || !openThreadIds.has(changedThread.id) || activeThreadId !== changedThread.id) {
+      return;
+    }
+
+    const focusedThreadId = focusedCodexThreadId();
+    const userFocusedThreadId = userFocusedThreadIdRef.current ?? focusedThreadId;
+    if (userFocusedThreadId && userFocusedThreadId !== changedThread.id) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      const threadElement = threadRefs.current.get(changedThread.id);
+      const scrollContainer = threadScrollContainerRef.current;
+      if (!threadElement || !scrollContainer) {
+        return;
+      }
+      threadElement.scrollIntoView({ behavior: "auto", block: "end" });
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    });
+  }, [activeThreadId, openThreadIds, threads]);
+
   return (
-    <aside className="flex h-screen min-h-0 flex-col overflow-hidden bg-[#060b14]">
+    <aside
+      className="flex h-screen min-h-0 flex-col overflow-hidden bg-[#060b14]"
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          userFocusedThreadIdRef.current = null;
+        }
+      }}
+    >
       <div className="flex h-16 shrink-0 items-center justify-between border-b border-slate-800 px-5">
         <div className="text-sm font-semibold text-white">✦ Codex</div>
         <button
@@ -710,7 +837,7 @@ function CodexPanel({
           />
         </div>
       ) : null}
-      <div className="min-h-0 flex-1 overflow-auto space-y-3 p-4">
+      <div className="min-h-0 flex-1 overflow-auto space-y-3 p-4" ref={threadScrollContainerRef}>
         {threads.length === 0 ? (
           <p className="rounded-md border border-slate-800 bg-slate-950 p-4 text-sm text-slate-500">
             No Codex threads yet.
@@ -722,7 +849,16 @@ function CodexPanel({
           return (
             <article
               className={isActive ? "overflow-hidden rounded-md border border-blue-500/50 bg-slate-950" : "overflow-hidden rounded-md border border-slate-800 bg-slate-950"}
+              data-codex-thread-id={thread.id}
+              id={`codex-thread-${thread.id}`}
               key={thread.id}
+              onFocusCapture={() => {
+                userFocusedThreadIdRef.current = thread.id;
+              }}
+              onPointerDownCapture={() => {
+                userFocusedThreadIdRef.current = thread.id;
+              }}
+              ref={(element) => registerThread(thread.id, element)}
             >
               <button
                 aria-expanded={isOpen}
@@ -759,7 +895,7 @@ function ThreadBody({
   onAppendTurn,
   thread,
 }: {
-  onAppendTurn: (threadId: string, utterance: string) => Promise<void>;
+  onAppendTurn: (threadId: string, utterance: string) => Promise<CodexThread>;
   thread: CodexThread;
 }) {
   const [utterance, setUtterance] = useState("");
@@ -820,7 +956,7 @@ function AskCodexForm({
   placeholder,
 }: {
   compact: boolean;
-  onSubmit: (utterance: string) => Promise<void>;
+  onSubmit: (utterance: string) => Promise<unknown>;
   placeholder: string;
 }) {
   const [utterance, setUtterance] = useState("");
@@ -966,6 +1102,26 @@ function normalizeRange(start: string | null, end: string | null): [string, stri
 
 function hasActiveCodexThread(threads: CodexThread[]) {
   return threads.some((thread) => thread.status === "queued" || thread.status === "running");
+}
+
+function threadUpdateSignature(thread: CodexThread) {
+  const lastTurn = thread.turns.at(-1);
+  return [
+    thread.status,
+    thread.updated_at,
+    thread.error_message ?? "",
+    thread.turns.length,
+    lastTurn?.id ?? "",
+    lastTurn?.markdown.length ?? 0,
+  ].join("|");
+}
+
+function focusedCodexThreadId() {
+  const activeElement = document.activeElement;
+  if (!(activeElement instanceof HTMLElement)) {
+    return null;
+  }
+  return activeElement.closest("[data-codex-thread-id]")?.getAttribute("data-codex-thread-id") ?? null;
 }
 
 function upsertThread(threads: CodexThread[], nextThread: CodexThread) {
