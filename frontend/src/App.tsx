@@ -62,6 +62,12 @@ export function App() {
   const [focusedPanelId, setFocusedPanelId] = useState<string | null>(null);
 
   async function loadAuthenticatedApp(user: User, dashboardId?: string) {
+    const dashboardState = await loadDashboardState(dashboardId);
+    const threads = await fetchCodexThreads();
+    setState({ status: "ready", user, ...dashboardState, threads });
+  }
+
+  async function loadDashboardState(dashboardId?: string) {
     const dashboards = await fetchDashboards();
     const selectedId =
       dashboardId ?? dashboards.find((dashboard) => dashboard.slug === "checkout-funnel")?.id ?? dashboards[0]?.id;
@@ -69,23 +75,44 @@ export function App() {
       throw new Error("No dashboards available");
     }
 
-    const [dashboardDetailEntries, threads] = await Promise.all([
-      Promise.all(
-        dashboards.map(async (dashboard) => [dashboard.id, await fetchDashboardDetail(dashboard.id)] as const),
-      ),
-      fetchCodexThreads(),
-    ]);
+    const dashboardDetailEntries = await Promise.all(
+      dashboards.map(async (dashboard) => [dashboard.id, await fetchDashboardDetail(dashboard.id)] as const),
+    );
     const dashboardDetails = Object.fromEntries(dashboardDetailEntries);
-    const selectedDashboard = dashboardDetails[selectedId];
+    const fallbackId = dashboards[0]?.id;
+    const selectedDashboard = dashboardDetails[selectedId] ?? (fallbackId ? dashboardDetails[fallbackId] : undefined);
     if (!selectedDashboard) {
       throw new Error(`Dashboard detail not found for ${selectedId}`);
     }
-    setState({ status: "ready", user, dashboards, dashboardDetails, selectedDashboard, threads });
+    return { dashboards, dashboardDetails, selectedDashboard };
   }
 
-  async function refreshThreads() {
+  async function refreshDashboardState() {
+    const dashboards = await fetchDashboards();
+    const dashboardDetailEntries = await Promise.all(
+      dashboards.map(async (dashboard) => [dashboard.id, await fetchDashboardDetail(dashboard.id)] as const),
+    );
+    const dashboardDetails = Object.fromEntries(dashboardDetailEntries);
+    setState((current) => {
+      if (current.status !== "ready") {
+        return current;
+      }
+      const fallbackId = dashboards[0]?.id;
+      const selectedDashboard =
+        dashboardDetails[current.selectedDashboard.id] ?? (fallbackId ? dashboardDetails[fallbackId] : undefined);
+      if (!selectedDashboard) {
+        throw new Error("No dashboards available");
+      }
+      return { ...current, dashboards, dashboardDetails, selectedDashboard };
+    });
+  }
+
+  async function refreshThreads(refreshDashboardsWhenIdle = false) {
     const threads = await fetchCodexThreads();
     setState((current) => current.status === "ready" ? { ...current, threads } : current);
+    if (refreshDashboardsWhenIdle && !hasActiveCodexThread(threads)) {
+      await refreshDashboardState();
+    }
     return threads;
   }
 
@@ -121,7 +148,7 @@ export function App() {
     }
 
     const intervalId = window.setInterval(() => {
-      void refreshThreads();
+      void refreshThreads(true);
     }, 2_000);
 
     return () => {
@@ -202,13 +229,13 @@ export function App() {
       context: codexContextForCurrentView(state.selectedDashboard, selection),
     });
     setState((current) => current.status === "ready" ? { ...current, threads: upsertThread(current.threads, thread) } : current);
-    void refreshThreads();
+    void refreshThreads(true);
   }
 
   async function handleAppendCodexTurn(threadId: string, utterance: string) {
     const thread = await appendCodexThreadTurn(threadId, { utterance });
     setState((current) => current.status === "ready" ? { ...current, threads: upsertThread(current.threads, thread) } : current);
-    void refreshThreads();
+    void refreshThreads(true);
   }
 
   async function handleLogout() {
@@ -438,6 +465,11 @@ function DashboardNavGroup({
           >
             <span className="text-slate-400">{dashboard.space === "org" ? "▥" : "⌁"}</span>
             <span className="truncate">{dashboard.name}</span>
+            {dashboard.status === "draft" ? (
+              <span className="ml-auto shrink-0 rounded border border-amber-400/30 px-1.5 py-0.5 text-[10px] uppercase text-amber-200">
+                Draft
+              </span>
+            ) : null}
           </button>
         ))}
       </div>

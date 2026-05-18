@@ -5,6 +5,9 @@ export type Dashboard = {
   slug: string;
   name: string;
   space: "org" | "personal";
+  status: "draft" | "published";
+  created_by: "user" | "codex";
+  source_thread_id: string | null;
   description: string;
   agent_description: string;
 };

@@ -35,6 +35,9 @@ class MetricsProvider(Protocol):
     def query_metrics(self, query: dict[str, object]) -> list[dict[str, object]]:
         ...
 
+    def time_range_label(self) -> str:
+        ...
+
 
 class SQLiteMetricsProvider:
     max_query_days = 120
