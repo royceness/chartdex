@@ -119,6 +119,7 @@ describe("App", () => {
           threads: [codexThreadPayload("thread_new", "Why did revenue dip?", "complete")],
         }),
       });
+    mockDashboardOnlyResponses();
 
     fireEvent.change(screen.getByLabelText("Ask a question"), {
       target: { value: "Why did revenue dip?" },
@@ -163,6 +164,7 @@ describe("App", () => {
           threads: [codexThreadPayload("thread_checkout_conversion", "Explain checkout conversion", "complete")],
         }),
       });
+    mockDashboardOnlyResponses();
 
     fireEvent.change(screen.getByPlaceholderText("Ask a follow-up..."), {
       target: { value: "Break that down by platform." },
@@ -199,6 +201,29 @@ function mockAuthenticatedLoad() {
 }
 
 function mockDashboardResponses() {
+  mockDashboardOnlyResponses();
+  fetchMock.mockResolvedValueOnce({
+    ok: true,
+    json: async () => ({
+      threads: [
+        {
+          ...codexThreadPayload("thread_checkout_conversion", "Explain checkout conversion", "complete"),
+          turns: [
+            {
+              id: "turn_assistant",
+              role: "assistant",
+              markdown:
+                "### Checkout conversion read\n\n```mermaid\nflowchart LR\n  Sessions --> Purchase\n```",
+              created_at: "2026-05-17T20:45:12Z",
+            },
+          ],
+        },
+      ],
+    }),
+  });
+}
+
+function mockDashboardOnlyResponses() {
   fetchMock
     .mockResolvedValueOnce({
       ok: true,
@@ -211,6 +236,9 @@ function mockDashboardResponses() {
             slug: "checkout-funnel",
             name: "Checkout Funnel",
             space: "org",
+            status: "published",
+            created_by: "user",
+            source_thread_id: null,
             description: "Session-to-purchase conversion and step drop-off.",
             agent_description: "Use Checkout Funnel for conversion health.",
           },
@@ -221,6 +249,9 @@ function mockDashboardResponses() {
             slug: "growth-experiments",
             name: "Growth Experiments",
             space: "personal",
+            status: "published",
+            created_by: "user",
+            source_thread_id: null,
             description: "Experiment rollout and segment-level performance.",
             agent_description: "Use Growth Experiments for experiment analysis.",
           },
@@ -243,28 +274,12 @@ function mockDashboardResponses() {
           slug: "growth-experiments",
           name: "Growth Experiments",
           space: "personal",
+          status: "published",
+          created_by: "user",
+          source_thread_id: null,
           description: "Experiment rollout and segment-level performance.",
           agent_description: "Use Growth Experiments for experiment analysis.",
         },
-      }),
-    })
-    .mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        threads: [
-          {
-            ...codexThreadPayload("thread_checkout_conversion", "Explain checkout conversion", "complete"),
-            turns: [
-              {
-                id: "turn_assistant",
-                role: "assistant",
-                markdown:
-                  "### Checkout conversion read\n\n```mermaid\nflowchart LR\n  Sessions --> Purchase\n```",
-                created_at: "2026-05-17T20:45:12Z",
-              },
-            ],
-          },
-        ],
       }),
     });
 }
@@ -277,6 +292,9 @@ function checkoutDashboardDetail() {
     slug: "checkout-funnel",
     name: "Checkout Funnel",
     space: "org",
+    status: "published",
+    created_by: "user",
+    source_thread_id: null,
     description: "Session-to-purchase conversion and step drop-off.",
     agent_description: "Use Checkout Funnel for conversion health.",
     time_range_label: "May 12 - Jun 10, 2026",

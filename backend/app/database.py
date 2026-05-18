@@ -128,7 +128,32 @@ def initialize_databases(app_db_path: Path, metrics_db_path: Path, demo_mode: bo
                 name TEXT NOT NULL,
                 space TEXT NOT NULL CHECK (space IN ('org', 'personal')),
                 description TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'published' CHECK (status IN ('draft', 'published')),
+                created_by TEXT NOT NULL DEFAULT 'user' CHECK (created_by IN ('user', 'codex')),
+                source_thread_id TEXT,
                 UNIQUE(org_id, slug)
+            )
+            """
+        )
+        app_db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dashboard_panels (
+                id TEXT PRIMARY KEY,
+                dashboard_id TEXT NOT NULL REFERENCES dashboards(id) ON DELETE CASCADE,
+                org_id TEXT NOT NULL REFERENCES orgs(id),
+                owner_user_id TEXT NOT NULL REFERENCES users(id),
+                title TEXT NOT NULL,
+                type TEXT NOT NULL CHECK (type IN ('line', 'bar')),
+                metric_key TEXT NOT NULL,
+                value_format TEXT NOT NULL CHECK (value_format IN ('currency', 'percent', 'integer')),
+                description TEXT NOT NULL,
+                query_json TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                created_by TEXT NOT NULL DEFAULT 'codex' CHECK (created_by IN ('user', 'codex')),
+                source_thread_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(dashboard_id, position)
             )
             """
         )
@@ -179,6 +204,7 @@ def initialize_databases(app_db_path: Path, metrics_db_path: Path, demo_mode: bo
             )
             """
         )
+        ensure_dashboard_schema(app_db)
         ensure_codex_thread_schema(app_db)
         if demo_mode:
             seed_demo_app_state(app_db, metrics_db_path)
@@ -226,6 +252,19 @@ def ensure_codex_thread_schema(app_db: sqlite3.Connection) -> None:
         app_db.execute("ALTER TABLE codex_threads RENAME COLUMN external_thread_id TO external_codex_thread_id")
         return
     app_db.execute("ALTER TABLE codex_threads ADD COLUMN external_codex_thread_id TEXT")
+
+
+def ensure_dashboard_schema(app_db: sqlite3.Connection) -> None:
+    dashboard_columns = {
+        row["name"]
+        for row in app_db.execute("PRAGMA table_info(dashboards)").fetchall()
+    }
+    if "status" not in dashboard_columns:
+        app_db.execute("ALTER TABLE dashboards ADD COLUMN status TEXT NOT NULL DEFAULT 'published'")
+    if "created_by" not in dashboard_columns:
+        app_db.execute("ALTER TABLE dashboards ADD COLUMN created_by TEXT NOT NULL DEFAULT 'user'")
+    if "source_thread_id" not in dashboard_columns:
+        app_db.execute("ALTER TABLE dashboards ADD COLUMN source_thread_id TEXT")
 
 
 def seed_demo_app_state(app_db: sqlite3.Connection, metrics_db_path: Path) -> None:
@@ -351,7 +390,7 @@ def list_dashboards(
     with connect(app_db_path) as app_db:
         rows = app_db.execute(
             f"""
-            SELECT id, org_id, owner_user_id, slug, name, space, description
+            SELECT id, org_id, owner_user_id, slug, name, space, description, status, created_by, source_thread_id
             FROM dashboards
             WHERE {" AND ".join(filters)}
             ORDER BY
@@ -378,7 +417,7 @@ def get_dashboard_summary(
     with connect(app_db_path) as app_db:
         row = app_db.execute(
             """
-            SELECT id, org_id, owner_user_id, slug, name, space, description
+            SELECT id, org_id, owner_user_id, slug, name, space, description, status, created_by, source_thread_id
             FROM dashboards
             WHERE id = ?
                 AND org_id = ?
@@ -457,6 +496,98 @@ def get_github_repository_for_org(app_db_path: Path, org_id: str) -> dict[str, s
     return dict(row) if row else None
 
 
+def create_draft_dashboard(
+    app_db_path: Path,
+    *,
+    org_id: str,
+    user_id: str,
+    name: str,
+    description: str,
+    source_thread_id: str,
+) -> dict[str, object]:
+    dashboard_id = f"dash_{uuid4().hex}"
+    slug = unique_dashboard_slug(app_db_path, org_id=org_id, base_slug=slugify(name))
+    with connect(app_db_path) as app_db:
+        app_db.execute(
+            """
+            INSERT INTO dashboards (
+                id, org_id, owner_user_id, slug, name, space, description,
+                status, created_by, source_thread_id
+            )
+            VALUES (?, ?, ?, ?, ?, 'personal', ?, 'draft', 'codex', ?)
+            """,
+            (dashboard_id, org_id, user_id, slug, name, description, source_thread_id),
+        )
+    dashboard = get_dashboard_summary(
+        app_db_path,
+        dashboard_id=dashboard_id,
+        org_id=org_id,
+        user_id=user_id,
+    )
+    if dashboard is None:
+        raise RuntimeError(f"Created draft dashboard disappeared: {dashboard_id}")
+    return dashboard
+
+
+def create_draft_panel(
+    app_db_path: Path,
+    *,
+    org_id: str,
+    user_id: str,
+    dashboard_id: str,
+    panel: dict[str, object],
+    source_thread_id: str,
+) -> dict[str, object]:
+    dashboard = get_dashboard_summary(
+        app_db_path,
+        dashboard_id=dashboard_id,
+        org_id=org_id,
+        user_id=user_id,
+    )
+    if dashboard is None:
+        raise ValueError("Dashboard not found")
+    if dashboard["space"] != "personal" or dashboard["owner_user_id"] != user_id:
+        raise ValueError("Codex can only add panels to the current user's personal dashboards")
+    now = utc_now()
+    panel_id = f"panel_{uuid4().hex}"
+    query = panel["query"]
+    if not isinstance(query, dict):
+        raise ValueError("panel.query must be an object")
+    with connect(app_db_path) as app_db:
+        position = next_dashboard_panel_position(app_db, dashboard_id)
+        app_db.execute(
+            """
+            INSERT INTO dashboard_panels (
+                id, dashboard_id, org_id, owner_user_id, title, type, metric_key,
+                value_format, description, query_json, position, created_by,
+                source_thread_id, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'codex', ?, ?, ?)
+            """,
+            (
+                panel_id,
+                dashboard_id,
+                org_id,
+                user_id,
+                panel["title"],
+                panel["type"],
+                panel["metric_key"],
+                panel["value_format"],
+                panel["description"],
+                json.dumps(query, sort_keys=True),
+                position,
+                source_thread_id,
+                now,
+                now,
+            ),
+        )
+        row = app_db.execute(
+            "SELECT * FROM dashboard_panels WHERE id = ?",
+            (panel_id,),
+        ).fetchone()
+    return authored_panel_payload(dict(row))
+
+
 def get_dashboard_detail(
     app_db_path: Path,
     *,
@@ -474,7 +605,101 @@ def get_dashboard_detail(
         return None
 
     provider = get_metrics_provider_for_org(app_db_path, org_id)
-    return provider.get_dashboard_detail(summary)
+    authored_panels = list_authored_dashboard_panels(
+        app_db_path,
+        dashboard_id=dashboard_id,
+        org_id=org_id,
+        user_id=user_id,
+    )
+    if summary.get("status") == "draft" and summary.get("created_by") == "codex":
+        return {
+            **summary,
+            "time_range_label": provider.time_range_label(),
+            "panels": [
+                render_authored_panel(provider, panel)
+                for panel in authored_panels
+            ],
+        }
+    detail = provider.get_dashboard_detail(summary)
+    if authored_panels:
+        detail["panels"] = [
+            *detail["panels"],
+            *[
+                render_authored_panel(provider, panel)
+                for panel in authored_panels
+            ],
+        ]
+    return detail
+
+
+def list_authored_dashboard_panels(
+    app_db_path: Path,
+    *,
+    dashboard_id: str,
+    org_id: str,
+    user_id: str,
+) -> list[dict[str, object]]:
+    with connect(app_db_path) as app_db:
+        rows = app_db.execute(
+            """
+            SELECT *
+            FROM dashboard_panels
+            WHERE dashboard_id = ?
+                AND org_id = ?
+                AND owner_user_id = ?
+            ORDER BY position, created_at, id
+            """,
+            (dashboard_id, org_id, user_id),
+        ).fetchall()
+    return [authored_panel_payload(dict(row)) for row in rows]
+
+
+def authored_panel_payload(row: dict[str, object]) -> dict[str, object]:
+    row["query"] = json.loads(str(row.pop("query_json")))
+    return row
+
+
+def render_authored_panel(provider: object, panel: dict[str, object]) -> dict[str, object]:
+    query = panel["query"]
+    if not isinstance(query, dict):
+        raise RuntimeError("Authored panel query is invalid")
+    rows = provider.query_metrics(query)
+    metric_key = str(panel["metric_key"])
+    base = {
+        "id": panel["id"],
+        "title": panel["title"],
+        "type": panel["type"],
+        "metric_key": metric_key,
+        "value_format": panel["value_format"],
+        "description": panel["description"],
+        "agent_description": f"Draft panel authored by Codex from thread {panel['source_thread_id']}.",
+    }
+    if panel["type"] == "line":
+        return {
+            **base,
+            "data": [
+                {
+                    "metric": metric_key,
+                    "observed_on": str(row["date"]),
+                    "value": row[metric_key],
+                }
+                for row in rows
+            ],
+        }
+    dimensions = query.get("dimensions")
+    if not isinstance(dimensions, list) or not dimensions:
+        raise RuntimeError("Authored bar panel query has no dimension")
+    dimension = str(dimensions[0])
+    return {
+        **base,
+        "data": [
+            {
+                "label": str(row[dimension]),
+                "value": row[metric_key],
+            }
+            for row in rows
+        ],
+    }
 
 
 def list_codex_threads(app_db_path: Path, *, org_id: str, user_id: str) -> list[dict[str, object]]:
@@ -745,6 +970,41 @@ def parse_github_repository(value: str) -> tuple[str, str]:
     if len(parts) != 2 or not all(parts):
         raise RuntimeError("CHARTDEX_GITHUB_REPOSITORY must use owner/name")
     return parts[0], parts[1]
+
+
+def next_dashboard_panel_position(app_db: sqlite3.Connection, dashboard_id: str) -> int:
+    row = app_db.execute(
+        """
+        SELECT COALESCE(MAX(position), 0) + 1 AS next_position
+        FROM dashboard_panels
+        WHERE dashboard_id = ?
+        """,
+        (dashboard_id,),
+    ).fetchone()
+    return int(row["next_position"])
+
+
+def unique_dashboard_slug(app_db_path: Path, *, org_id: str, base_slug: str) -> str:
+    with connect(app_db_path) as app_db:
+        existing = {
+            row["slug"]
+            for row in app_db.execute(
+                "SELECT slug FROM dashboards WHERE org_id = ?",
+                (org_id,),
+            ).fetchall()
+        }
+    if base_slug not in existing:
+        return base_slug
+    suffix = 2
+    while f"{base_slug}-{suffix}" in existing:
+        suffix += 1
+    return f"{base_slug}-{suffix}"
+
+
+def slugify(value: str) -> str:
+    slug = "".join(char.lower() if char.isalnum() else "-" for char in value.strip())
+    parts = [part for part in slug.split("-") if part]
+    return "-".join(parts) or f"draft-{uuid4().hex[:8]}"
 
 
 def database_paths_exist(*paths: Path) -> Iterator[tuple[str, bool]]:

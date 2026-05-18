@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from app.database import get_dashboard_detail, get_dashboard_summary, list_dashboards
+from app.dashboard_authoring import authoring_tool_specs, handle_authoring_tool_call
 from app.github_tools import GITHUB_NAMESPACE, github_tool_specs, handle_github_tool_call
 from app.metrics_provider import get_metrics_provider_for_org
 
@@ -118,7 +119,7 @@ def dynamic_tool_specs() -> list[dict[str, object]]:
             },
             "exposeToContext": True,
         },
-    ] + github_tool_specs()
+    ] + authoring_tool_specs() + github_tool_specs()
 
 
 async def handle_tool_call(
@@ -135,6 +136,10 @@ async def handle_tool_call(
         arguments = {}
     if not isinstance(arguments, dict):
         raise ValueError("Tool arguments must be an object")
+
+    authoring_result = await handle_authoring_tool_call(context, tool, arguments)
+    if authoring_result is not None:
+        return authoring_result
 
     provider = get_metrics_provider_for_org(context.app_db_path, context.org_id)
     if tool == "list_metrics":

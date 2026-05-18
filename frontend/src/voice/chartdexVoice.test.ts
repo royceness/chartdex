@@ -110,6 +110,9 @@ const checkoutDashboard = {
   name: "Checkout Funnel",
   org_id: "org_acme",
   owner_user_id: null,
+  status: "published",
+  created_by: "user",
+  source_thread_id: null,
   panels: [
     {
       agent_description: "Use this for conversion dips.",
