@@ -159,7 +159,9 @@ The generated SQLite file is intentionally ignored by git. Commit the generator,
 
 Codex-facing context for the generated dataset lives in `data/metric_context.md`.
 
-## Demo Path
+## Demo 
+
+https://www.loom.com/share/1eaa9431cbbe4df79d261c5e7cc6c0ac
 
 1. Sign in as `admin@acme.test`.
 2. Ask voice to show "purchases by platform"; it should navigate to Revenue Overview.
@@ -167,3 +169,4 @@ Codex-facing context for the generated dataset lives in `data/metric_context.md`
 4. Ask voice: "Can you investigate this?"
 5. Open the Codex thread and show the Markdown investigation.
 6. Ask voice to "reset my demo" before recording another take.
+
