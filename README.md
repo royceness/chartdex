@@ -69,7 +69,6 @@ The metrics SQLite database is deliberately behind a provider interface. The dem
 - `scripts/generate_demo_metrics.py` - deterministic generator for the demo metrics SQLite database.
 - `tests/` - generator-level tests for the metrics data and hidden anomaly.
 - `data/` - metric context and dashboard recommendation source docs.
-- `docsm/` - planning docs and ExecPlans captured during the build.
 - `backend/data/` - generated local SQLite files, ignored by git.
 
 ## Security Model
